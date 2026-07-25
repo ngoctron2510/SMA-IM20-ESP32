@@ -47,9 +47,9 @@ config = load_config()
 IM20_IP = config["im20_ip"]
 
 # --- CẤU HÌNH FIREBASE PROJECT ---
-FIREBASE_API_KEY = "AIzaSyAwtFVfjPctaUtFR591VENo_BB7P4L5bDQ"
-FIREBASE_PROJECT_ID = "im20-480bb"
-FIREBASE_DEFAULT_URL = "https://im20-480bb-default-rtdb.asia-southeast1.firebasedatabase.app"
+FIREBASE_API_KEY = ""
+FIREBASE_PROJECT_ID = ""
+FIREBASE_DEFAULT_URL = ""
 FIREBASE_URL = FIREBASE_DEFAULT_URL + "/solarsystem/live.json?key=" + FIREBASE_API_KEY
 
 # --- YIELD CACHE (lưu giá trị yield cuối cùng để tính daily) ---
