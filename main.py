@@ -8,29 +8,46 @@ import machine
 import ntptime
 import gc
 from machine import Pin
-from uModbusTCP import ModbusTCP
+from uModbusTCP import ModbusTCP, set_log_callback
 
 # Cấu hình GC: dọn rác thường xuyên hơn để tránh phân mảnh heap
 gc.threshold(8192)  # Tự động GC khi heap còn < 8KB
 
-# --- KHỞI TẠO NGOẠI VI PHẦN CỨNG THỰC TẾ ---
-# Cấu hình LED trạng thái tại GPIO12 (HIGH = Sáng)
-led = Pin(12, Pin.OUT)
-led.value(0) # Ban đầu tắt LED
+# --- NHẬT KÝ HOẠT ĐỘNG (LOG RING BUFFER TỐI ƯU MEMORY RAM CHO ESP32) ---
+MAX_LOG_LINES = 20
+sys_logs = []
 
-# Biến điều khiển Firebase (khai báo trước để load_config dùng global)
+def log_info(*args):
+    global sys_logs
+    msg = " ".join([str(a) for a in args])
+    print(msg)
+    try:
+        now = time.localtime()
+        time_str = "{:02d}:{:02d}:{:02d}".format(now[3], now[4], now[5])
+        entry = "[{}] {}".format(time_str, msg)
+        sys_logs.append(entry)
+        if len(sys_logs) > MAX_LOG_LINES:
+            sys_logs.pop(0)
+    except:
+        pass
+
+set_log_callback(log_info)
+
+# Biến điều khiển Firebase & Phần cứng
 firebase_enabled = False  # Mặc định TẮT đẩy Firebase
 firebase_url_custom = ""
 firebase_api_key = ""
+led_pin_num = 12  # Mặc định GPIO 12
 
 # --- ĐỌC/GHI CẤU HÌNH TỪ FLASH ---
 def load_config():
-    global firebase_enabled, firebase_url_custom, firebase_api_key
+    global firebase_enabled, firebase_url_custom, firebase_api_key, led_pin_num
     default_cfg = {
         "im20_ip": "172.16.32.119",
         "firebase_enabled": False,
         "firebase_url": "",
-        "firebase_api_key": ""
+        "firebase_api_key": "",
+        "led_pin": 12
     }
     try:
         with open('config.json', 'r') as f:
@@ -38,28 +55,53 @@ def load_config():
             firebase_enabled = cfg.get("firebase_enabled", False)
             firebase_url_custom = cfg.get("firebase_url", "")
             firebase_api_key = cfg.get("firebase_api_key", "")
+            led_pin_num = cfg.get("led_pin", 12)
             return cfg
     except Exception as e:
-        print("[Config] Chưa có hoặc lỗi đọc config.json, dùng mặc định:", e)
+        log_info("[Config] Chưa có hoặc lỗi đọc config.json, dùng mặc định:", e)
         return default_cfg
 
 def save_config(new_data=None):
-    global config, firebase_enabled, firebase_url_custom, firebase_api_key
+    global config, firebase_enabled, firebase_url_custom, firebase_api_key, led_pin_num
     if new_data:
         config.update(new_data)
     config["firebase_enabled"] = firebase_enabled
     config["firebase_url"] = firebase_url_custom
     config["firebase_api_key"] = firebase_api_key
+    config["led_pin"] = led_pin_num
     try:
         with open('config.json', 'w') as f:
             json.dump(config, f)
-        print("[Config] Đã lưu cấu hình mới vào config.json")
+        log_info("[Config] Đã lưu cấu hình mới vào config.json")
     except Exception as e:
-        print("[Config] Lỗi ghi config.json:", e)
+        log_info("[Config] Lỗi ghi config.json:", e)
 
 config = load_config()
 IM20_IP = config.get("im20_ip", "172.16.32.119")
 FIREBASE_API_KEY = config.get("firebase_api_key", "")
+led_pin_num = config.get("led_pin", 12)
+
+# --- KHỞI TẠO NGOẠI VI PHẦN CỨNG THỰC TẾ ---
+led = Pin(led_pin_num, Pin.OUT)
+led.value(0) # Ban đầu tắt LED
+
+def set_led_pin(new_pin):
+    global led, led_pin_num
+    try:
+        pin_val = int(new_pin)
+        if pin_val in (12, 22):
+            if led:
+                try:
+                    led.value(0)
+                except:
+                    pass
+            led_pin_num = pin_val
+            led = Pin(led_pin_num, Pin.OUT)
+            led.value(0)
+            save_config({"led_pin": led_pin_num})
+            log_info("Đã chuyển chân LED trạng thái sang GPIO", led_pin_num)
+    except Exception as e:
+        log_info("Lỗi chuyển chân LED:", e)
 
 # Hàm lấy URL cơ sở cho Firebase
 def get_firebase_base_url():
@@ -111,25 +153,25 @@ if lan.isconnected():
             utc_plus_7 = time.time() + 7 * 3600
             tm = time.localtime(utc_plus_7)
             rtc.datetime((tm[0], tm[1], tm[2], tm[6], tm[3], tm[4], tm[5], 0))
-            print("Đồng bộ thời gian thành công (GMT+7):", "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5]))
+            log_info("Đồng bộ thời gian thành công (GMT+7):", "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5]))
             time_synced = True
             break
         except Exception as e:
-            print("Lỗi đồng bộ thời gian (lần {}): {}".format(retry + 1, e))
+            log_info("Lỗi đồng bộ thời gian (lần {}): {}".format(retry + 1, e))
             time.sleep(2)
     
     if not time_synced:
-        print("Cảnh báo: Không thể đồng bộ thời gian, dữ liệu lịch sử sẽ không hoạt động!")
+        log_info("Cảnh báo: Không thể đồng bộ thời gian, dữ liệu lịch sử sẽ không hoạt động!")
 else:
-    print("Thất bại: Không nhận được IP từ DHCP!")
+    log_info("Thất bại: Không nhận được IP từ DHCP!")
     time_synced = False
 
 # --- KHỞI TẠO WIFI ACCESS POINT (PHÁT WIFI) ---
 ap = network.WLAN(network.AP_IF)
 ap.active(True)
 ap.config(essid="IM20 Monitor", password="lienanh123", authmode=3)
-print("Đã phát Wi-Fi AP. Tên: IM20 Monitor | Pass: lienanh123")
-print("IP Web UI qua Wi-Fi:", ap.ifconfig()[0])
+log_info("Đã phát Wi-Fi AP. Tên: IM20 Monitor | Pass: lienanh123")
+log_info("IP Web UI qua Wi-Fi:", ap.ifconfig()[0])
 
 # --- GIAO DIỆN HTML WEB SERVER (cache tĩnh, giảm phân mảnh heap) ---
 HTML_HEAD = """<!DOCTYPE html>
@@ -206,6 +248,18 @@ HTML_HEAD = """<!DOCTYPE html>
                                     updateFirebaseUI(data.system.firebase_enabled, data.system.firebase_url_custom || '');
                                 }
                             }
+                            
+                            // Cập nhật Nhật ký Terminal Log
+                            if(data.logs && Array.isArray(data.logs)) {
+                                let logBox = document.getElementById('sys_log_box');
+                                if(logBox) {
+                                    let shouldScroll = (logBox.scrollHeight - logBox.clientHeight <= logBox.scrollTop + 30);
+                                    logBox.innerText = data.logs.join('\n');
+                                    if(shouldScroll) {
+                                        logBox.scrollTop = logBox.scrollHeight;
+                                    }
+                                }
+                            }
                     
                     let invTable = document.getElementById('inv_table_body');
                     invTable.innerHTML = "";
@@ -243,14 +297,23 @@ HTML_BODY = """    </head>
                 <h2>Cấu hình Hệ thống</h2>
                 <form action="/set_ip" method="GET">
                     <label>IP Inverter Manager (IM20): </label>
-                    <input type="text" name="ip" value=\"{IM20_IP}\">
+                    <input type="text" name="ip" value="{IM20_IP}">
                     <input type="submit" value="Cập nhật IP">
                 </form>
                 <hr style="margin:12px 0;border-color:#ddd">
                 <form action="/set_firebase_url" method="GET">
                     <label>Firebase Database URL: </label>
-                    <input type="text" id="fb_url_input" name="url" value=\"{FB_URL}\" placeholder="https://...firebasedatabase.app" style="width:300px">
+                    <input type="text" id="fb_url_input" name="url" value="{FB_URL}" placeholder="https://...firebasedatabase.app" style="width:300px">
                     <input type="submit" value="Lưu URL">
+                </form>
+                <hr style="margin:12px 0;border-color:#ddd">
+                <form action="/set_led_pin" method="GET">
+                    <label>Chân LED Trạng thái (GPIO): </label>
+                    <select name="pin" style="padding:6px;border-radius:4px;border:1px solid #ccc;margin-right:8px">
+                        <option value="12" {LED_12_SEL}>GPIO 12 (Phiên bản v1)</option>
+                        <option value="22" {LED_22_SEL}>GPIO 22 (Phiên bản v2)</option>
+                    </select>
+                    <input type="submit" value="Lưu Chân LED">
                 </form>
             </div>
 
@@ -287,12 +350,24 @@ HTML_BODY = """    </head>
                     </tbody>
                 </table>
             </div>
+
+            <div class="card" style="background:#1e272e;color:#55efc4">
+                <h2 style="color:#00d2d3;margin-top:0">📜 Nhật ký Hệ thống (Terminal Log)</h2>
+                <pre id="sys_log_box" style="height:160px;overflow-y:auto;background:#0d1117;color:#7ee787;padding:10px;border-radius:4px;font-family:'Consolas','Courier New',monospace;font-size:12px;margin:0;white-space:pre-wrap;word-break:break-all">Đang tải nhật ký...</pre>
+            </div>
         </div>
     </body>
     </html>"""
 
 def get_html_page():
-    return HTML_HEAD + HTML_BODY.format(IM20_IP=IM20_IP, FB_URL=firebase_url_custom)
+    led_12_sel = "selected" if led_pin_num == 12 else ""
+    led_22_sel = "selected" if led_pin_num == 22 else ""
+    return HTML_HEAD + HTML_BODY.format(
+        IM20_IP=IM20_IP,
+        FB_URL=firebase_url_custom,
+        LED_12_SEL=led_12_sel,
+        LED_22_SEL=led_22_sel
+    )
 
 # --- KHỞI TẠO WEB SERVER ---
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -314,6 +389,8 @@ def handle_web_server():
                 data_out["system"] = {}
             data_out["system"]["firebase_enabled"] = firebase_enabled
             data_out["system"]["firebase_url_custom"] = firebase_url_custom
+            data_out["system"]["led_pin"] = led_pin_num
+            data_out["logs"] = sys_logs
             conn.send('HTTP/1.1 200 OK\nContent-Type: application/json\n\n')
             conn.send(json.dumps(data_out))
         elif 'GET /set_ip' in request:
@@ -322,14 +399,22 @@ def handle_web_server():
                 new_ip = query.split('ip=')[1].split('&')[0]
                 IM20_IP = new_ip
                 save_config({"im20_ip": new_ip})
-                print("Đã lưu IP mới cho IM20:", new_ip)
+                log_info("Đã lưu IP mới cho IM20:", new_ip)
+            except:
+                pass
+            conn.send('HTTP/1.1 303 See Other\nLocation: /\n\n')
+        elif 'GET /set_led_pin' in request:
+            try:
+                query = request.split(' ')[1]
+                new_pin = query.split('pin=')[1].split('&')[0]
+                set_led_pin(new_pin)
             except:
                 pass
             conn.send('HTTP/1.1 303 See Other\nLocation: /\n\n')
         elif 'GET /toggle_firebase' in request:
             firebase_enabled = not firebase_enabled
             save_config()
-            print("Firebase push:", "BẬT" if firebase_enabled else "TẮT")
+            log_info("Firebase push:", "BẬT" if firebase_enabled else "TẮT")
             conn.send('HTTP/1.1 200 OK\nContent-Type: application/json\n\n')
             conn.send(json.dumps({"firebase_enabled": firebase_enabled}))
         elif 'GET /set_firebase_url' in request:
@@ -339,7 +424,7 @@ def handle_web_server():
                 new_url = new_url.replace('%3A', ':').replace('%2F', '/').replace('%3F', '?').replace('%3D', '=').replace('%26', '&')
                 firebase_url_custom = new_url
                 save_config()
-                print("Đã lưu Firebase URL mới:", new_url)
+                log_info("Đã lưu Firebase URL mới:", new_url)
             except:
                 pass
             conn.send('HTTP/1.1 303 See Other\nLocation: /\n\n')
@@ -451,7 +536,7 @@ def task_modbus_scan():
             gc.collect()
             led.value(0)
         except Exception as e:
-            print("Lỗi đẩy dữ liệu Firebase:", e)
+            log_info("Lỗi đẩy dữ liệu Firebase:", e)
             local_data["system"]["firebase_status"] = "disconnected"
             led.value(0)
     else:
@@ -478,10 +563,10 @@ def push_history_to_firebase():
         res.close()
         del res, headers
         gc.collect()
-        print("Đã lưu dữ liệu lịch sử vào Firebase: {}/{}.".format(date_str, time_str))
+        log_info("Đã lưu dữ liệu lịch sử vào Firebase: {}/{}.".format(date_str, time_str))
         led.value(0)
     except Exception as e:
-        print("Lỗi lưu dữ liệu lịch sử Firebase:", e)
+        log_info("Lỗi lưu dữ liệu lịch sử Firebase:", e)
         led.value(0)
         gc.collect()
 
@@ -503,7 +588,7 @@ def calculate_daily_yield(current_data):
     prev_month = yield_cache.get("start_of_month", {}).get("month", "")
     if month_str != prev_month or yield_cache["start_of_month"].get("total_yield_wh", 0) == 0:
         yield_cache["start_of_month"] = {"month": month_str, "total_yield_wh": curr_total}
-        print("Cập nhật start_of_month: {} -> {} kWh".format(month_str, curr_total))
+        log_info("Cập nhật start_of_month: {} -> {} kWh".format(month_str, curr_total))
 
     start_month_total = yield_cache.get("start_of_month", {}).get("total_yield_wh", 0)
     if curr_total > 0 and start_month_total > 0 and curr_total >= start_month_total:
@@ -555,7 +640,7 @@ def calculate_daily_yield(current_data):
                             daily_yield_data["inverters"][inv_key] = {
                                 "yield_kwh": round(daily_inv_wh / 1000, 2)
                             }
-                print("Daily yield tính cho {}: {} kWh".format(yield_cache["last_date"], daily_yield_kwh))
+                log_info("Daily yield tính cho {}: {} kWh".format(yield_cache["last_date"], daily_yield_kwh))
 
     yield_cache["last_date"] = today_str
     yield_cache["total_yield_wh"] = curr_total
@@ -587,11 +672,11 @@ def push_daily_yield_to_firebase():
         res.close()
         del res, headers
         gc.collect()
-        print("Đã đẩy daily yield lên Firebase: {} -> {} kWh".format(date, daily_yield_data["total_yield_kwh"]))
+        log_info("Đã đẩy daily yield lên Firebase: {} -> {} kWh".format(date, daily_yield_data["total_yield_kwh"]))
         led.value(0)
         daily_yield_data = None
     except Exception as e:
-        print("Lỗi đẩy daily yield lên Firebase:", e)
+        log_info("Lỗi đẩy daily yield lên Firebase:", e)
         led.value(0)
 
 # --- VÒNG LẶP CHÍNH ---
@@ -602,7 +687,7 @@ def main():
     last_firebase_push = 0
     firebase_interval = 900
     
-    print("Mạch đã sẵn sàng chạy tác vụ nền!")
+    log_info("Mạch đã sẵn sàng chạy tác vụ nền!")
     while True:
         handle_web_server()
         
