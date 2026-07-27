@@ -262,7 +262,7 @@ HTML_HEAD = """<!DOCTYPE html>
                                 let logBox = document.getElementById('sys_log_box');
                                 if(logBox) {
                                     let shouldScroll = (logBox.scrollHeight - logBox.clientHeight <= logBox.scrollTop + 30);
-                                    logBox.innerText = data.logs.join('\n');
+                                    logBox.innerText = data.logs.join(String.fromCharCode(10));
                                     if(shouldScroll) {
                                         logBox.scrollTop = logBox.scrollHeight;
                                     }
