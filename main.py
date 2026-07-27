@@ -409,9 +409,13 @@ def handle_web_server():
             data_out["system"]["led_pin"] = led_pin_num
             data_out["logs"] = sys_logs
             json_payload = json.dumps(data_out)
-            header = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(json_payload))
+            json_bytes = json_payload.encode('utf-8')
+            header = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(json_bytes))
             conn.sendall(header.encode('utf-8'))
-            conn.sendall(json_payload.encode('utf-8'))
+            chunk_size = 512
+            for i in range(0, len(json_bytes), chunk_size):
+                conn.sendall(json_bytes[i:i+chunk_size])
+                time.sleep(0.005)
         elif 'GET /set_ip' in request:
             try:
                 query = request.split(' ')[1]
@@ -435,9 +439,10 @@ def handle_web_server():
             save_config()
             log_info("Firebase push:", "BẬT" if firebase_enabled else "TẮT")
             res_body = json.dumps({"firebase_enabled": firebase_enabled})
-            header = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(res_body))
+            res_bytes = res_body.encode('utf-8')
+            header = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(res_bytes))
             conn.sendall(header.encode('utf-8'))
-            conn.sendall(res_body.encode('utf-8'))
+            conn.sendall(res_bytes)
         elif 'GET /set_firebase_url' in request:
             try:
                 query = request.split(' ')[1]
@@ -451,13 +456,18 @@ def handle_web_server():
             conn.sendall(b'HTTP/1.1 303 See Other\r\nLocation: /\r\nConnection: close\r\n\r\n')
         else:
             html_page = get_html_page()
-            header = 'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(html_page))
+            html_bytes = html_page.encode('utf-8')
+            header = 'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(html_bytes))
             conn.sendall(header.encode('utf-8'))
-            conn.sendall(html_page.encode('utf-8'))
+            chunk_size = 512
+            for i in range(0, len(html_bytes), chunk_size):
+                conn.sendall(html_bytes[i:i+chunk_size])
+                time.sleep(0.005)
     except Exception as e:
         pass
     finally:
         try:
+            time.sleep(0.03) # Chờ LWIP đẩy xong hết dữ liệu TCP trước khi đóng socket
             conn.close()
         except:
             pass
