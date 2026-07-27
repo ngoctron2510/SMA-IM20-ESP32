@@ -179,33 +179,33 @@ HTML_HEAD = """<!DOCTYPE html>
                     updateFirebaseUI(data.firebase_enabled);
                 });
             }
-            setInterval(function() {
-                fetch('/data').then(response => response.json()).then(data => {
-                    if(data.system) {
-                        if(data.system.power_total) {
-                            document.getElementById('sys_p').innerText = (data.system.power_total/1000).toFixed(2) + " kW";
-                            document.getElementById('sys_f').innerText = data.system.frequency + " Hz";
-                        } else {
-                            document.getElementById('sys_p').innerText = "-";
-                            document.getElementById('sys_f').innerText = "-";
-                        }
-                        if(data.system.device_ip) {
-                            document.getElementById('device_ip').innerText = data.system.device_ip;
-                        }
-                        // Cập nhật sản lượng điện
-                        if(data.system.today_yield_kwh !== undefined) {
-                            document.getElementById('today_yield').innerText = data.system.today_yield_kwh.toFixed(1);
-                        }
-                        if(data.system.month_yield_kwh !== undefined) {
-                            document.getElementById('month_yield').innerText = data.system.month_yield_kwh.toFixed(1);
-                        }
-                        updateStatus('im20_status', data.system.im20_status || 'disconnected');
-                        updateStatus('fb_status', data.system.firebase_status || 'disconnected');
-                        // Cập nhật trạng thái nút bật/tắt Firebase
-                        if(data.system.firebase_enabled !== undefined) {
-                            updateFirebaseUI(data.system.firebase_enabled, data.system.firebase_url_custom || '');
-                        }
-                    }
+                    setInterval(function() {
+                        fetch('/data').then(response => response.json()).then(data => {
+                            if(data.system) {
+                                if(data.system.power_total !== undefined && data.system.power_total !== null && data.system.power_total >= 0) {
+                                    document.getElementById('sys_p').innerText = (data.system.power_total/1000).toFixed(2) + " kW";
+                                    document.getElementById('sys_f').innerText = (data.system.frequency || 50.0).toFixed(2) + " Hz";
+                                } else {
+                                    document.getElementById('sys_p').innerText = "-";
+                                    document.getElementById('sys_f').innerText = "-";
+                                }
+                                if(data.system.device_ip) {
+                                    document.getElementById('device_ip').innerText = data.system.device_ip;
+                                }
+                                // Cập nhật sản lượng điện (lấy 3 số thập phân)
+                                if(data.system.today_yield_kwh !== undefined) {
+                                    document.getElementById('today_yield').innerText = data.system.today_yield_kwh.toFixed(3);
+                                }
+                                if(data.system.month_yield_kwh !== undefined) {
+                                    document.getElementById('month_yield').innerText = data.system.month_yield_kwh.toFixed(1);
+                                }
+                                updateStatus('im20_status', data.system.im20_status || 'disconnected');
+                                updateStatus('fb_status', data.system.firebase_status || 'disconnected');
+                                // Cập nhật trạng thái nút bật/tắt Firebase
+                                if(data.system.firebase_enabled !== undefined) {
+                                    updateFirebaseUI(data.system.firebase_enabled, data.system.firebase_url_custom || '');
+                                }
+                            }
                     
                     let invTable = document.getElementById('inv_table_body');
                     invTable.innerHTML = "";
@@ -389,7 +389,7 @@ def task_modbus_scan():
                 }
             time.sleep(0.02)
 
-        # 3. Đọc Total Yield (Sản lượng tích lũy) theo SunSpec
+        # 3. Đọc Total Yield (Sản lượng tích lũy) theo SunSpec (Unit ID 125 đã có hệ 1000 - đơn vị kWh)
         data_yield_total = client.read_holding_registers(125, 40209, 2)
         if data_yield_total and len(data_yield_total) >= 2:
             raw = (data_yield_total[0] << 16) | data_yield_total[1]
@@ -408,6 +408,20 @@ def task_modbus_scan():
             except:
                 pass
             time.sleep(0.02)
+
+        # Nếu power_total của IM20 bị 0 hoặc không đọc được, tính tổng từ các inverter thành phần
+        if payload["system"].get("power_total", 0) == 0 and payload.get("inverters"):
+            inv_p_sum = sum(inv.get("power", 0) for inv in payload["inverters"].values() if inv.get("power", 0) > 0)
+            if inv_p_sum <= 1200000:
+                payload["system"]["power_total"] = inv_p_sum
+
+        # Bổ sung tính trung bình điện áp & tần số nếu chưa có
+        if (payload["system"].get("voltage", 0) == 0 or payload["system"].get("frequency", 0) == 0) and payload.get("inverters"):
+            valid_v = [inv["va"] for inv in payload["inverters"].values() if inv.get("va", 0) > 0]
+            if valid_v:
+                payload["system"]["voltage"] = round(sum(valid_v) / len(valid_v), 1)
+            if payload["system"].get("frequency", 0) == 0:
+                payload["system"]["frequency"] = 50.0
         
         client.close()
     
@@ -480,33 +494,52 @@ def calculate_daily_yield(current_data):
 
     sys_data = current_data.get("system", {})
     inv_data = current_data.get("inverters", {})
-    curr_total = sys_data.get("total_yield_wh", 0)
+    curr_total = sys_data.get("total_yield_wh", 0)  # Lưu ý: ID 125 sản lượng tổng đọc về đã là kWh (hệ 1000)
 
+    # 1. Tính Sản lượng Tháng (month_yield_kwh) - Không chia 1000 nữa!
     if "start_of_month" not in yield_cache:
         yield_cache["start_of_month"] = {"month": "", "total_yield_wh": 0}
 
     prev_month = yield_cache.get("start_of_month", {}).get("month", "")
-    if month_str != prev_month:
+    if month_str != prev_month or yield_cache["start_of_month"].get("total_yield_wh", 0) == 0:
         yield_cache["start_of_month"] = {"month": month_str, "total_yield_wh": curr_total}
-        print("Cập nhật start_of_month: {} -> {} Wh".format(month_str, curr_total))
+        print("Cập nhật start_of_month: {} -> {} kWh".format(month_str, curr_total))
 
     start_month_total = yield_cache.get("start_of_month", {}).get("total_yield_wh", 0)
     if curr_total > 0 and start_month_total > 0 and curr_total >= start_month_total:
-        month_wh = curr_total - start_month_total
-        local_data["system"]["month_yield_kwh"] = round(month_wh / 1000, 2)
+        month_kwh = curr_total - start_month_total  # Đã là kWh (không chia 1000)
+        local_data["system"]["month_yield_kwh"] = round(month_kwh, 2)
     else:
-        local_data["system"]["month_yield_kwh"] = 0
+        local_data["system"]["month_yield_kwh"] = 0.0
 
     if curr_total == 0:
-        local_data["system"]["today_yield_kwh"] = 0
+        local_data["system"]["today_yield_kwh"] = 0.0
         return
 
+    # 2. Tính Sản lượng Hôm nay (today_yield_kwh live - lấy 3 số thập phân, không chia 1000)
+    if "start_of_day" not in yield_cache:
+        yield_cache["start_of_day"] = {"date": "", "total_yield_wh": 0}
+
+    start_day_date = yield_cache.get("start_of_day", {}).get("date", "")
+    start_day_total = yield_cache.get("start_of_day", {}).get("total_yield_wh", 0)
+
+    if today_str != start_day_date or start_day_total == 0:
+        yield_cache["start_of_day"] = {"date": today_str, "total_yield_wh": curr_total}
+        start_day_total = curr_total
+
+    if curr_total >= start_day_total and start_day_total > 0:
+        today_kwh = curr_total - start_day_total  # Đã là kWh (ID 125 không chia 1000)
+        local_data["system"]["today_yield_kwh"] = round(today_kwh, 3)  # Lấy 3 số thập phân
+    else:
+        local_data["system"]["today_yield_kwh"] = 0.0
+
+    # 3. Khi sang ngày mới: tính sản lượng ngày hôm qua để đẩy lên Firebase
     if today_str != yield_cache.get("last_date", "") and yield_cache.get("last_date", ""):
         prev_total = yield_cache.get("total_yield_wh", 0)
         if prev_total > 0:
-            daily_wh = curr_total - prev_total
-            if daily_wh >= 0:
-                daily_yield_kwh = round(daily_wh / 1000, 2)
+            daily_kwh = curr_total - prev_total  # Đã là kWh, KHÔNG chia 1000!
+            if daily_kwh >= 0:
+                daily_yield_kwh = round(daily_kwh, 3)  # Lấy 3 số thập phân đơn vị kWh
                 daily_yield_data = {
                     "date": yield_cache["last_date"],
                     "total_yield_kwh": daily_yield_kwh,
@@ -518,10 +551,10 @@ def calculate_daily_yield(current_data):
                     if curr_ywh > 0 and prev_ywh > 0:
                         daily_inv_wh = curr_ywh - prev_ywh
                         if daily_inv_wh >= 0:
+                            # Inverter (ID 126-141) yield_wh đọc về là Wh -> CẦN chia 1000 để ra kWh
                             daily_yield_data["inverters"][inv_key] = {
                                 "yield_kwh": round(daily_inv_wh / 1000, 2)
                             }
-                local_data["system"]["today_yield_kwh"] = daily_yield_kwh
                 print("Daily yield tính cho {}: {} kWh".format(yield_cache["last_date"], daily_yield_kwh))
 
     yield_cache["last_date"] = today_str
