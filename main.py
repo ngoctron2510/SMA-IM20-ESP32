@@ -8,7 +8,11 @@ import machine
 import ntptime
 import gc
 from machine import Pin
-from uModbusTCP import ModbusTCP, set_log_callback
+try:
+    from uModbusTCP import ModbusTCP, set_log_callback
+except ImportError:
+    from uModbusTCP import ModbusTCP
+    set_log_callback = None
 
 # Cấu hình GC: dọn rác thường xuyên hơn để tránh phân mảnh heap
 gc.threshold(8192)  # Tự động GC khi heap còn < 8KB
@@ -31,7 +35,11 @@ def log_info(*args):
     except:
         pass
 
-set_log_callback(log_info)
+if set_log_callback:
+    try:
+        set_log_callback(log_info)
+    except:
+        pass
 
 # Biến điều khiển Firebase & Phần cứng
 firebase_enabled = False  # Mặc định TẮT đẩy Firebase
