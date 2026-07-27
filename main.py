@@ -365,7 +365,10 @@ def task_modbus_scan():
         data_total = client.read_holding_registers(125, 40195, 7)
         if data_total and len(data_total) >= 7:
             payload["system"]["voltage"] = round(data_total[0] * 0.1, 1)
-            payload["system"]["power_total"] = int(data_total[4] * 100)
+            p_total = int(data_total[4] * 100)
+            if p_total > 1200000 or p_total < 0 or data_total[4] in (0xFFFF, 0xFFFE):
+                p_total = 0
+            payload["system"]["power_total"] = p_total
             payload["system"]["frequency"] = round(data_total[6] * 0.001, 2)
         
         # 2. Đọc 16 Inverter thành phần (Unit ID: 126 đến 141)
