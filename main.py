@@ -294,7 +294,7 @@ HTML_HEAD = """<!DOCTYPE html>
                     }
                 }).catch(err => console.log('Fetch error:', err));
             }, 3000);
-        </script>"""",StartLine:291,TargetContent:
+        </script>"""
 
 HTML_BODY = """    </head>
     <body>
