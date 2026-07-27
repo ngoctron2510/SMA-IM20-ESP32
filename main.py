@@ -388,8 +388,17 @@ def handle_web_server():
     global IM20_IP, firebase_enabled, firebase_url_custom
     try:
         conn, addr = server_socket.accept()
-        led.value(1) # Bật LED khi có người dùng truy cập web
-        request = conn.recv(1024).decode('utf-8')
+    except OSError:
+        return
+
+    try:
+        conn.settimeout(1.0) # Cho phép chờ tối đa 1s để nhận trọn vẹn HTTP Request từ browser
+        led.value(1)
+        raw_req = conn.recv(1024)
+        if not raw_req:
+            return
+        
+        request = raw_req.decode('utf-8', 'ignore')
         
         if 'GET /data' in request:
             data_out = dict(local_data)
@@ -399,8 +408,10 @@ def handle_web_server():
             data_out["system"]["firebase_url_custom"] = firebase_url_custom
             data_out["system"]["led_pin"] = led_pin_num
             data_out["logs"] = sys_logs
-            conn.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n')
-            conn.send(json.dumps(data_out))
+            json_payload = json.dumps(data_out)
+            header = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(json_payload))
+            conn.sendall(header.encode('utf-8'))
+            conn.sendall(json_payload.encode('utf-8'))
         elif 'GET /set_ip' in request:
             try:
                 query = request.split(' ')[1]
@@ -410,7 +421,7 @@ def handle_web_server():
                 log_info("Đã lưu IP mới cho IM20:", new_ip)
             except:
                 pass
-            conn.send('HTTP/1.1 303 See Other\r\nLocation: /\r\n\r\n')
+            conn.sendall(b'HTTP/1.1 303 See Other\r\nLocation: /\r\nConnection: close\r\n\r\n')
         elif 'GET /set_led_pin' in request:
             try:
                 query = request.split(' ')[1]
@@ -418,13 +429,15 @@ def handle_web_server():
                 set_led_pin(new_pin)
             except:
                 pass
-            conn.send('HTTP/1.1 303 See Other\r\nLocation: /\r\n\r\n')
+            conn.sendall(b'HTTP/1.1 303 See Other\r\nLocation: /\r\nConnection: close\r\n\r\n')
         elif 'GET /toggle_firebase' in request:
             firebase_enabled = not firebase_enabled
             save_config()
             log_info("Firebase push:", "BẬT" if firebase_enabled else "TẮT")
-            conn.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n')
-            conn.send(json.dumps({"firebase_enabled": firebase_enabled}))
+            res_body = json.dumps({"firebase_enabled": firebase_enabled})
+            header = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(res_body))
+            conn.sendall(header.encode('utf-8'))
+            conn.sendall(res_body.encode('utf-8'))
         elif 'GET /set_firebase_url' in request:
             try:
                 query = request.split(' ')[1]
@@ -435,15 +448,20 @@ def handle_web_server():
                 log_info("Đã lưu Firebase URL mới:", new_url)
             except:
                 pass
-            conn.send('HTTP/1.1 303 See Other\r\nLocation: /\r\n\r\n')
+            conn.sendall(b'HTTP/1.1 303 See Other\r\nLocation: /\r\nConnection: close\r\n\r\n')
         else:
-            conn.send('HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n')
-            conn.send(get_html_page())
-        conn.close()
-        gc.collect()
-        led.value(0)
-    except OSError:
+            html_page = get_html_page()
+            header = 'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(html_page))
+            conn.sendall(header.encode('utf-8'))
+            conn.sendall(html_page.encode('utf-8'))
+    except Exception as e:
         pass
+    finally:
+        try:
+            conn.close()
+        except:
+            pass
+        led.value(0)
 
 # --- HÀM QUÉT MODBUS ---
 def task_modbus_scan():
@@ -478,7 +496,7 @@ def task_modbus_scan():
             if data_inv and len(data_inv) >= 13:
                 if data_inv[0] == 0xFFFF or data_inv[12] == 0x8000:
                     continue
-                local_data["inverters"][f"inv_{inv_id}"] = {
+                local_data["inverters"]["inv_{}".format(inv_id)] = {
                     "ia": round(data_inv[1] * 0.01, 2),
                     "ib": round(data_inv[2] * 0.01, 2),
                     "ic": round(data_inv[3] * 0.01, 2),
@@ -498,14 +516,14 @@ def task_modbus_scan():
                 local_data["system"]["total_yield_wh"] = raw
 
         for inv_id in range(126, 142):
-            if f"inv_{inv_id}" not in local_data["inverters"]:
+            if "inv_{}".format(inv_id) not in local_data["inverters"]:
                 continue
             try:
                 data_yield_inv = client.read_holding_registers(inv_id, 40209, 2)
                 if data_yield_inv and len(data_yield_inv) >= 2:
                     raw = (data_yield_inv[0] << 16) | data_yield_inv[1]
                     if raw != 0x80000000 and raw != 0:
-                        local_data["inverters"][f"inv_{inv_id}"]["yield_wh"] = raw
+                        local_data["inverters"]["inv_{}".format(inv_id)]["yield_wh"] = raw
             except:
                 pass
             time.sleep(0.01)
@@ -541,7 +559,7 @@ def task_modbus_scan():
             push_url = base_url + "/solarsystem/live.json?key=" + FIREBASE_API_KEY
             local_data["system"]["firebase_status"] = "connected"
             headers = {'Content-Type': 'application/json'}
-            res = urequests.put(push_url, data=json.dumps(payload), headers=headers)
+            res = urequests.put(push_url, data=json.dumps(local_data), headers=headers)
             res.close()
             del res, headers
             gc.collect()
