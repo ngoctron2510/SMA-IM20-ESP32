@@ -502,11 +502,10 @@ def task_modbus_scan():
         # 2. Đọc 16 Inverter thành phần (Unit ID: 126 đến 141)
         for inv_id in range(126, 142):
             handle_web_server()
+            inv_key = "inv_{}".format(inv_id)
             data_inv = client.read_holding_registers(inv_id, 40187, 13)
-            if data_inv and len(data_inv) >= 13:
-                if data_inv[0] == 0xFFFF or data_inv[12] == 0x8000:
-                    continue
-                local_data["inverters"]["inv_{}".format(inv_id)] = {
+            if data_inv and len(data_inv) >= 13 and data_inv[0] != 0xFFFF and data_inv[12] != 0x8000:
+                local_data["inverters"][inv_key] = {
                     "ia": round(data_inv[1] * 0.01, 2),
                     "ib": round(data_inv[2] * 0.01, 2),
                     "ic": round(data_inv[3] * 0.01, 2),
@@ -515,6 +514,9 @@ def task_modbus_scan():
                     "vc": round(data_inv[10] * 0.1, 1),
                     "power": int(data_inv[12] * 10)
                 }
+            else:
+                # Xóa inverter khỏi danh sách nếu bị ngắt kết nối (offline)
+                local_data["inverters"].pop(inv_key, None)
             time.sleep(0.01)
 
         # 3. Đọc Total Yield (Sản lượng tích lũy) theo SunSpec (Unit ID 125 đã có hệ 1000 - đơn vị kWh)
@@ -526,14 +528,15 @@ def task_modbus_scan():
                 local_data["system"]["total_yield_wh"] = raw
 
         for inv_id in range(126, 142):
-            if "inv_{}".format(inv_id) not in local_data["inverters"]:
+            inv_key = "inv_{}".format(inv_id)
+            if inv_key not in local_data["inverters"]:
                 continue
             try:
                 data_yield_inv = client.read_holding_registers(inv_id, 40209, 2)
                 if data_yield_inv and len(data_yield_inv) >= 2:
                     raw = (data_yield_inv[0] << 16) | data_yield_inv[1]
                     if raw != 0x80000000 and raw != 0:
-                        local_data["inverters"]["inv_{}".format(inv_id)]["yield_wh"] = raw
+                        local_data["inverters"][inv_key]["yield_wh"] = raw
             except:
                 pass
             time.sleep(0.01)
@@ -553,6 +556,12 @@ def task_modbus_scan():
                 local_data["system"]["frequency"] = 50.0
         
         client.close()
+    else:
+        # Nếu mất kết nối hoàn toàn với IM20, xóa danh sách inverter và reset công suất về 0
+        local_data["inverters"].clear()
+        local_data["system"]["power_total"] = 0
+        local_data["system"]["voltage"] = 0
+        local_data["system"]["frequency"] = 0
     
     try:
         del client
