@@ -292,9 +292,9 @@ HTML_HEAD = """<!DOCTYPE html>
                     } else {
                         invTable.innerHTML = '<tr><td colspan="4">Đang quét dữ liệu Modbus từ mạng LAN...</td></tr>';
                     }
-                });
+                }).catch(err => console.log('Fetch error:', err));
             }, 3000);
-        </script>"""
+        </script>"""",StartLine:291,TargetContent:
 
 HTML_BODY = """    </head>
     <body>
@@ -389,9 +389,9 @@ def handle_web_server():
     try:
         conn, addr = server_socket.accept()
         led.value(1) # Bật LED khi có người dùng truy cập web
-        request = conn.recv(384).decode('utf-8')
+        request = conn.recv(1024).decode('utf-8')
         
-        if 'GET /data ' in request:
+        if 'GET /data' in request:
             data_out = dict(local_data)
             if "system" not in data_out:
                 data_out["system"] = {}
@@ -399,7 +399,7 @@ def handle_web_server():
             data_out["system"]["firebase_url_custom"] = firebase_url_custom
             data_out["system"]["led_pin"] = led_pin_num
             data_out["logs"] = sys_logs
-            conn.send('HTTP/1.1 200 OK\nContent-Type: application/json\n\n')
+            conn.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n')
             conn.send(json.dumps(data_out))
         elif 'GET /set_ip' in request:
             try:
@@ -410,7 +410,7 @@ def handle_web_server():
                 log_info("Đã lưu IP mới cho IM20:", new_ip)
             except:
                 pass
-            conn.send('HTTP/1.1 303 See Other\nLocation: /\n\n')
+            conn.send('HTTP/1.1 303 See Other\r\nLocation: /\r\n\r\n')
         elif 'GET /set_led_pin' in request:
             try:
                 query = request.split(' ')[1]
@@ -418,12 +418,12 @@ def handle_web_server():
                 set_led_pin(new_pin)
             except:
                 pass
-            conn.send('HTTP/1.1 303 See Other\nLocation: /\n\n')
+            conn.send('HTTP/1.1 303 See Other\r\nLocation: /\r\n\r\n')
         elif 'GET /toggle_firebase' in request:
             firebase_enabled = not firebase_enabled
             save_config()
             log_info("Firebase push:", "BẬT" if firebase_enabled else "TẮT")
-            conn.send('HTTP/1.1 200 OK\nContent-Type: application/json\n\n')
+            conn.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n')
             conn.send(json.dumps({"firebase_enabled": firebase_enabled}))
         elif 'GET /set_firebase_url' in request:
             try:
@@ -435,9 +435,9 @@ def handle_web_server():
                 log_info("Đã lưu Firebase URL mới:", new_url)
             except:
                 pass
-            conn.send('HTTP/1.1 303 See Other\nLocation: /\n\n')
+            conn.send('HTTP/1.1 303 See Other\r\nLocation: /\r\n\r\n')
         else:
-            conn.send('HTTP/1.1 200 OK\nContent-Type: text/html\n\n')
+            conn.send('HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n')
             conn.send(get_html_page())
         conn.close()
         gc.collect()
@@ -451,27 +451,34 @@ def task_modbus_scan():
     client = ModbusTCP(IM20_IP)
     im20_connected = client.connect()
 
-    payload = {"system": {"device_ip": DEVICE_IP, "im20_status": "connected" if im20_connected else "disconnected"}}
+    if "system" not in local_data:
+        local_data["system"] = {}
+    if "inverters" not in local_data:
+        local_data["inverters"] = {}
+
+    local_data["system"]["device_ip"] = DEVICE_IP
+    local_data["system"]["im20_status"] = "connected" if im20_connected else "disconnected"
     
     if im20_connected:
         # 1. Đọc dữ liệu tổng hệ thống từ IM20 (Unit ID = 125)
+        handle_web_server()
         data_total = client.read_holding_registers(125, 40195, 7)
         if data_total and len(data_total) >= 7:
-            payload["system"]["voltage"] = round(data_total[0] * 0.1, 1)
+            local_data["system"]["voltage"] = round(data_total[0] * 0.1, 1)
             p_total = int(data_total[4] * 100)
             if p_total > 1200000 or p_total < 0 or data_total[4] in (0xFFFF, 0xFFFE):
                 p_total = 0
-            payload["system"]["power_total"] = p_total
-            payload["system"]["frequency"] = round(data_total[6] * 0.001, 2)
+            local_data["system"]["power_total"] = p_total
+            local_data["system"]["frequency"] = round(data_total[6] * 0.001, 2)
         
         # 2. Đọc 16 Inverter thành phần (Unit ID: 126 đến 141)
-        payload["inverters"] = {}
         for inv_id in range(126, 142):
+            handle_web_server()
             data_inv = client.read_holding_registers(inv_id, 40187, 13)
             if data_inv and len(data_inv) >= 13:
                 if data_inv[0] == 0xFFFF or data_inv[12] == 0x8000:
                     continue
-                payload["inverters"][f"inv_{inv_id}"] = {
+                local_data["inverters"][f"inv_{inv_id}"] = {
                     "ia": round(data_inv[1] * 0.01, 2),
                     "ib": round(data_inv[2] * 0.01, 2),
                     "ic": round(data_inv[3] * 0.01, 2),
@@ -480,51 +487,47 @@ def task_modbus_scan():
                     "vc": round(data_inv[10] * 0.1, 1),
                     "power": int(data_inv[12] * 10)
                 }
-            time.sleep(0.02)
+            time.sleep(0.01)
 
         # 3. Đọc Total Yield (Sản lượng tích lũy) theo SunSpec (Unit ID 125 đã có hệ 1000 - đơn vị kWh)
+        handle_web_server()
         data_yield_total = client.read_holding_registers(125, 40209, 2)
         if data_yield_total and len(data_yield_total) >= 2:
             raw = (data_yield_total[0] << 16) | data_yield_total[1]
             if raw != 0x80000000:  # NaN check
-                payload["system"]["total_yield_wh"] = raw
+                local_data["system"]["total_yield_wh"] = raw
 
         for inv_id in range(126, 142):
-            if f"inv_{inv_id}" not in payload["inverters"]:
+            if f"inv_{inv_id}" not in local_data["inverters"]:
                 continue
             try:
                 data_yield_inv = client.read_holding_registers(inv_id, 40209, 2)
                 if data_yield_inv and len(data_yield_inv) >= 2:
                     raw = (data_yield_inv[0] << 16) | data_yield_inv[1]
                     if raw != 0x80000000 and raw != 0:
-                        payload["inverters"][f"inv_{inv_id}"]["yield_wh"] = raw
+                        local_data["inverters"][f"inv_{inv_id}"]["yield_wh"] = raw
             except:
                 pass
-            time.sleep(0.02)
+            time.sleep(0.01)
 
         # Nếu power_total của IM20 bị 0 hoặc không đọc được, tính tổng từ các inverter thành phần
-        if payload["system"].get("power_total", 0) == 0 and payload.get("inverters"):
-            inv_p_sum = sum(inv.get("power", 0) for inv in payload["inverters"].values() if inv.get("power", 0) > 0)
+        if local_data["system"].get("power_total", 0) == 0 and local_data.get("inverters"):
+            inv_p_sum = sum(inv.get("power", 0) for inv in local_data["inverters"].values() if inv.get("power", 0) > 0)
             if inv_p_sum <= 1200000:
-                payload["system"]["power_total"] = inv_p_sum
+                local_data["system"]["power_total"] = inv_p_sum
 
         # Bổ sung tính trung bình điện áp & tần số nếu chưa có
-        if (payload["system"].get("voltage", 0) == 0 or payload["system"].get("frequency", 0) == 0) and payload.get("inverters"):
-            valid_v = [inv["va"] for inv in payload["inverters"].values() if inv.get("va", 0) > 0]
+        if (local_data["system"].get("voltage", 0) == 0 or local_data["system"].get("frequency", 0) == 0) and local_data.get("inverters"):
+            valid_v = [inv["va"] for inv in local_data["inverters"].values() if inv.get("va", 0) > 0]
             if valid_v:
-                payload["system"]["voltage"] = round(sum(valid_v) / len(valid_v), 1)
-            if payload["system"].get("frequency", 0) == 0:
-                payload["system"]["frequency"] = 50.0
+                local_data["system"]["voltage"] = round(sum(valid_v) / len(valid_v), 1)
+            if local_data["system"].get("frequency", 0) == 0:
+                local_data["system"]["frequency"] = 50.0
         
         client.close()
     
-    local_data = payload
     try:
         del client
-    except:
-        pass
-    try:
-        del data_total
     except:
         pass
     gc.collect()
