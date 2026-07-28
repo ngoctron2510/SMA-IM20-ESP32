@@ -494,32 +494,134 @@ def handle_web_server():
         led.value(0)
         gc.collect()
 
-# --- HÀM AN TOÀN ĐẨY DỮ LIỆU FIREBASE (TỐI ƯU BỘ NHỚ RAM HEAP CHỐNG ENOMEM) ---
+# --- HÀM AN TOÀN ĐẨY DỮ LIỆU FIREBASE (TỐI ƯU BỘ NHỚ RAM HEAP CHỐNG ENOMEM VỚI DNS CACHE & RAW SOCKET) ---
+_firebase_dns_cache = {}
+
 def safe_firebase_put(url, data_dict):
-    res = None
+    global _firebase_dns_cache
+    s = None
     try:
         gc.collect()
         led.value(1)
+
+        proto, dummy, host_path = url.split('/', 2)
+        if '/' in host_path:
+            host, path = host_path.split('/', 1)
+            path = '/' + path
+        else:
+            host = host_path
+            path = '/'
+
+        port = 443 if proto == 'https:' else 80
+
         payload = json.dumps(data_dict)
-        headers = {'Content-Type': 'application/json'}
-        res = urequests.put(url, data=payload, headers=headers)
-        status = res.status_code
-        res.close()
-        del res, payload, headers
+        content_len = len(payload)
+
+        # 1. Tra cứu DNS 1 lần duy nhất & lưu cache chống hao RAM
+        if host not in _firebase_dns_cache:
+            gc.collect()
+            addr_info = socket.getaddrinfo(host, port)
+            _firebase_dns_cache[host] = addr_info[0][-1]
+        addr = _firebase_dns_cache[host]
+
+        # 2. Dọn rác ngay trước khi tạo socket TCP & SSL
+        gc.collect()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5.0)
+        s.connect(addr)
+
+        # 3. SSL Handshake với RAM liên tục tối đa
+        if proto == 'https:':
+            import ussl
+            gc.collect()
+            s = ussl.wrap_socket(s, server_hostname=host)
+
+        # 4. Gửi HTTP PUT Request
+        req_header = "PUT {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n".format(path, host, content_len)
+        s.sendall(req_header.encode('utf-8'))
+        s.sendall(payload.encode('utf-8'))
+
+        # 5. Đọc kiểm tra phản hồi
+        resp_line = s.readline()
+        success = False
+        if resp_line and (b" 200 " in resp_line or b" 204 " in resp_line or b" HTTP/1.1 2" in resp_line or b" HTTP/1.0 2" in resp_line):
+            success = True
+
+        s.close()
+        s = None
+        del payload, req_header, resp_line
         gc.collect()
         led.value(0)
-        return (status == 200 or status == 204)
+        return success
     except Exception as e:
-        if res:
+        if s:
             try:
-                res.close()
+                s.close()
             except:
                 pass
-            del res
+        if 'host' in locals() and host in _firebase_dns_cache:
+            _firebase_dns_cache.pop(host, None)
         led.value(0)
         gc.collect()
         log_info("Lỗi đẩy dữ liệu Firebase:", e)
         return False
+
+def safe_firebase_get(url):
+    global _firebase_dns_cache
+    s = None
+    try:
+        gc.collect()
+        proto, dummy, host_path = url.split('/', 2)
+        if '/' in host_path:
+            host, path = host_path.split('/', 1)
+            path = '/' + path
+        else:
+            host = host_path
+            path = '/'
+
+        port = 443 if proto == 'https:' else 80
+
+        if host not in _firebase_dns_cache:
+            gc.collect()
+            addr_info = socket.getaddrinfo(host, port)
+            _firebase_dns_cache[host] = addr_info[0][-1]
+        addr = _firebase_dns_cache[host]
+
+        gc.collect()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5.0)
+        s.connect(addr)
+
+        if proto == 'https:':
+            import ussl
+            gc.collect()
+            s = ussl.wrap_socket(s, server_hostname=host)
+
+        req_header = "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n".format(path, host)
+        s.sendall(req_header.encode('utf-8'))
+
+        while True:
+            line = s.readline()
+            if not line or line == b"\r\n":
+                break
+
+        body = s.read()
+        s.close()
+        s = None
+        gc.collect()
+        if body:
+            return json.loads(body.decode('utf-8'))
+        return None
+    except Exception as e:
+        if s:
+            try:
+                s.close()
+            except:
+                pass
+        if 'host' in locals() and host in _firebase_dns_cache:
+            _firebase_dns_cache.pop(host, None)
+        gc.collect()
+        return None
 
 # --- HÀM QUÉT MODBUS (ĐỌC GỘP THANH GHI TỐI ƯU BĂNG THÔNG) ---
 def task_modbus_scan():
@@ -652,16 +754,9 @@ def check_remote_commands():
     base_url = get_firebase_base_url()
     if not firebase_enabled or not base_url or not FIREBASE_API_KEY:
         return
-    res = None
     try:
-        gc.collect()
         cmd_url = "{}/solarsystem/commands/reset.json?key={}".format(base_url, FIREBASE_API_KEY)
-        headers = {'Content-Type': 'application/json'}
-        res = urequests.get(cmd_url, headers=headers)
-        val = res.json()
-        res.close()
-        del res, headers
-        gc.collect()
+        val = safe_firebase_get(cmd_url)
 
         if val is True or val == "reboot" or (isinstance(val, dict) and val.get("action") == "reboot"):
             log_info("⚠️ NHẬN LỆNH RESET TỪ XA TỪ FIREBASE! ĐANG KHỞI ĐỘNG LẠI ESP32...")
@@ -679,10 +774,6 @@ def check_remote_commands():
 
             machine.reset()
     except Exception as e:
-        if res:
-            try: res.close()
-            except: pass
-            del res
         gc.collect()
 
 # --- HÀM TÍNH SẢN LƯỢNG NGÀY & THÁNG ---
