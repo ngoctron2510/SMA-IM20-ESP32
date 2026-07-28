@@ -1,6 +1,6 @@
+import sys
 import network
 import time
-import urequests
 import json
 import socket
 import ustruct
@@ -9,13 +9,21 @@ import ntptime
 import gc
 from machine import Pin
 
+# Cấu hình Module SSL Alias toàn hệ thống chống lỗi no module named 'ussl'
 try:
     import ssl
+    sys.modules['ussl'] = ssl
 except ImportError:
     try:
         import ussl as ssl
+        sys.modules['ssl'] = ssl
     except ImportError:
-        import tls as ssl
+        try:
+            import tls as ssl
+            sys.modules['ssl'] = ssl
+            sys.modules['ussl'] = ssl
+        except ImportError:
+            pass
 
 try:
     from uModbusTCP import ModbusTCP, set_log_callback
@@ -536,7 +544,7 @@ def safe_firebase_put(url, data_dict):
         # 2. Dọn rác ngay trước khi tạo socket TCP & SSL
         gc.collect()
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(5.0)
+        s.settimeout(10.0)
         s.connect(addr)
 
         # 3. SSL Handshake với RAM liên tục tối đa
@@ -597,7 +605,7 @@ def safe_firebase_get(url):
 
         gc.collect()
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(5.0)
+        s.settimeout(10.0)
         s.connect(addr)
 
         if proto == 'https:':
