@@ -186,7 +186,6 @@ ap.active(True)
 ap.config(essid="IM20 Monitor", password="lienanh123", authmode=3)
 log_info("Đã phát Wi-Fi AP. Tên: IM20 Monitor | Pass: lienanh123")
 log_info("IP Web UI qua Wi-Fi:", ap.ifconfig()[0])
-log_info("Phiên bản firmware v1.0 OTA compiled ngày 28/07/2026 lúc 14h30")
 
 # --- GIAO DIỆN HTML WEB SERVER (cache tĩnh, giảm phân mảnh heap) ---
 HTML_HEAD = """<!DOCTYPE html>
@@ -374,15 +373,31 @@ HTML_BODY = """    </head>
     </body>
     </html>"""
 
-def get_html_page():
+def send_html_page(conn):
     led_12_sel = "selected" if led_pin_num == 12 else ""
     led_22_sel = "selected" if led_pin_num == 22 else ""
-    return HTML_HEAD + HTML_BODY.format(
+    body_str = HTML_BODY.format(
         IM20_IP=IM20_IP,
         FB_URL=firebase_url_custom,
         LED_12_SEL=led_12_sel,
         LED_22_SEL=led_22_sel
     )
+    head_bytes = HTML_HEAD.encode('utf-8')
+    body_bytes = body_str.encode('utf-8')
+    total_len = len(head_bytes) + len(body_bytes)
+    
+    header = 'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(total_len)
+    conn.sendall(header.encode('utf-8'))
+    
+    chunk_size = 512
+    for i in range(0, len(head_bytes), chunk_size):
+        conn.sendall(head_bytes[i:i+chunk_size])
+        time.sleep(0.002)
+    for i in range(0, len(body_bytes), chunk_size):
+        conn.sendall(body_bytes[i:i+chunk_size])
+        time.sleep(0.002)
+    del head_bytes, body_bytes, body_str
+    gc.collect()
 
 # --- KHỞI TẠO WEB SERVER ---
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -422,7 +437,9 @@ def handle_web_server():
             chunk_size = 512
             for i in range(0, len(json_bytes), chunk_size):
                 conn.sendall(json_bytes[i:i+chunk_size])
-                time.sleep(0.005)
+                time.sleep(0.002)
+            del data_out, json_payload, json_bytes
+            gc.collect()
         elif 'GET /set_ip' in request:
             try:
                 query = request.split(' ')[1]
@@ -450,6 +467,8 @@ def handle_web_server():
             header = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(res_bytes))
             conn.sendall(header.encode('utf-8'))
             conn.sendall(res_bytes)
+            del res_body, res_bytes
+            gc.collect()
         elif 'GET /set_firebase_url' in request:
             try:
                 query = request.split(' ')[1]
@@ -462,27 +481,49 @@ def handle_web_server():
                 pass
             conn.sendall(b'HTTP/1.1 303 See Other\r\nLocation: /\r\nConnection: close\r\n\r\n')
         else:
-            html_page = get_html_page()
-            html_bytes = html_page.encode('utf-8')
-            header = 'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n'.format(len(html_bytes))
-            conn.sendall(header.encode('utf-8'))
-            chunk_size = 512
-            for i in range(0, len(html_bytes), chunk_size):
-                conn.sendall(html_bytes[i:i+chunk_size])
-                time.sleep(0.005)
+            send_html_page(conn)
     except Exception as e:
         pass
     finally:
         try:
-            time.sleep(0.03) # Chờ LWIP đẩy xong hết dữ liệu TCP trước khi đóng socket
+            time.sleep(0.02) # Chờ LWIP đẩy xong hết dữ liệu TCP trước khi đóng socket
             conn.close()
         except:
             pass
         led.value(0)
+        gc.collect()
 
-# --- HÀM QUÉT MODBUS ---
+# --- HÀM AN TOÀN ĐẨY DỮ LIỆU FIREBASE (TỐI ƯU BỘ NHỚ RAM HEAP CHỐNG ENOMEM) ---
+def safe_firebase_put(url, data_dict):
+    res = None
+    try:
+        gc.collect()
+        led.value(1)
+        payload = json.dumps(data_dict)
+        headers = {'Content-Type': 'application/json'}
+        res = urequests.put(url, data=payload, headers=headers)
+        status = res.status_code
+        res.close()
+        del res, payload, headers
+        gc.collect()
+        led.value(0)
+        return (status == 200 or status == 204)
+    except Exception as e:
+        if res:
+            try:
+                res.close()
+            except:
+                pass
+            del res
+        led.value(0)
+        gc.collect()
+        log_info("Lỗi đẩy dữ liệu Firebase:", e)
+        return False
+
+# --- HÀM QUÉT MODBUS (ĐỌC GỘP THANH GHI TỐI ƯU BĂNG THÔNG) ---
 def task_modbus_scan():
     global local_data
+    gc.collect()
     client = ModbusTCP(IM20_IP)
     im20_connected = client.connect()
 
@@ -495,10 +536,22 @@ def task_modbus_scan():
     local_data["system"]["im20_status"] = "connected" if im20_connected else "disconnected"
     
     if im20_connected:
-        # 1. Đọc dữ liệu tổng hệ thống từ IM20 (Unit ID = 125)
+        # 1. Đọc dữ liệu tổng & Total Yield hệ thống từ IM20 (Unit ID = 125, đọc 16 thanh ghi từ 40195 đến 40210)
         handle_web_server()
-        data_total = client.read_holding_registers(125, 40195, 7)
-        if data_total and len(data_total) >= 7:
+        data_total = client.read_holding_registers(125, 40195, 16)
+        if data_total and len(data_total) >= 16:
+            local_data["system"]["voltage"] = round(data_total[0] * 0.1, 1)
+            p_total = int(data_total[4] * 100)
+            if p_total > 1200000 or p_total < 0 or data_total[4] in (0xFFFF, 0xFFFE):
+                p_total = 0
+            local_data["system"]["power_total"] = p_total
+            local_data["system"]["frequency"] = round(data_total[6] * 0.001, 2)
+            
+            # Total Yield (Sản lượng tích lũy kWh tại thanh ghi 40209-40210 -> offset 14-15)
+            raw_yield = (data_total[14] << 16) | data_total[15]
+            if raw_yield != 0x80000000 and raw_yield != 0:
+                local_data["system"]["total_yield_wh"] = raw_yield
+        elif data_total and len(data_total) >= 7:
             local_data["system"]["voltage"] = round(data_total[0] * 0.1, 1)
             p_total = int(data_total[4] * 100)
             if p_total > 1200000 or p_total < 0 or data_total[4] in (0xFFFF, 0xFFFE):
@@ -506,13 +559,13 @@ def task_modbus_scan():
             local_data["system"]["power_total"] = p_total
             local_data["system"]["frequency"] = round(data_total[6] * 0.001, 2)
         
-        # 2. Đọc 16 Inverter thành phần (Unit ID: 126 đến 141)
+        # 2. Đọc 16 Inverter thành phần (Unit ID: 126 đến 141) - Đọc gộp 24 thanh ghi (40187 đến 40210)
         for inv_id in range(126, 142):
             handle_web_server()
             inv_key = "inv_{}".format(inv_id)
-            data_inv = client.read_holding_registers(inv_id, 40187, 13)
+            data_inv = client.read_holding_registers(inv_id, 40187, 24)
             if data_inv and len(data_inv) >= 13 and data_inv[0] != 0xFFFF and data_inv[12] != 0x8000:
-                local_data["inverters"][inv_key] = {
+                inv_info = {
                     "ia": round(data_inv[1] * 0.01, 2),
                     "ib": round(data_inv[2] * 0.01, 2),
                     "ic": round(data_inv[3] * 0.01, 2),
@@ -521,31 +574,16 @@ def task_modbus_scan():
                     "vc": round(data_inv[10] * 0.1, 1),
                     "power": int(data_inv[12] * 10)
                 }
+                # Lấy yield_wh từ thanh ghi 40209-40210 (offset 22-23 trong mảng 24 thanh ghi)
+                if len(data_inv) >= 24:
+                    raw_y = (data_inv[22] << 16) | data_inv[23]
+                    if raw_y != 0x80000000 and raw_y != 0:
+                        inv_info["yield_wh"] = raw_y
+                
+                local_data["inverters"][inv_key] = inv_info
             else:
                 # Xóa inverter khỏi danh sách nếu bị ngắt kết nối (offline)
                 local_data["inverters"].pop(inv_key, None)
-            time.sleep(0.01)
-
-        # 3. Đọc Total Yield (Sản lượng tích lũy) theo SunSpec (Unit ID 125 đã có hệ 1000 - đơn vị kWh)
-        handle_web_server()
-        data_yield_total = client.read_holding_registers(125, 40209, 2)
-        if data_yield_total and len(data_yield_total) >= 2:
-            raw = (data_yield_total[0] << 16) | data_yield_total[1]
-            if raw != 0x80000000:  # NaN check
-                local_data["system"]["total_yield_wh"] = raw
-
-        for inv_id in range(126, 142):
-            inv_key = "inv_{}".format(inv_id)
-            if inv_key not in local_data["inverters"]:
-                continue
-            try:
-                data_yield_inv = client.read_holding_registers(inv_id, 40209, 2)
-                if data_yield_inv and len(data_yield_inv) >= 2:
-                    raw = (data_yield_inv[0] << 16) | data_yield_inv[1]
-                    if raw != 0x80000000 and raw != 0:
-                        local_data["inverters"][inv_key]["yield_wh"] = raw
-            except:
-                pass
             time.sleep(0.01)
 
         # Nếu power_total của IM20 bị 0 hoặc không đọc được, tính tổng từ các inverter thành phần
@@ -571,6 +609,7 @@ def task_modbus_scan():
         local_data["system"]["frequency"] = 0
     
     try:
+        client.close()
         del client
     except:
         pass
@@ -579,21 +618,11 @@ def task_modbus_scan():
     # Đẩy dữ liệu hiện tại lên Firebase (10 giây / lần) - chỉ đẩy nếu được bật
     base_url = get_firebase_base_url()
     if firebase_enabled and base_url and FIREBASE_API_KEY:
-        try:
-            gc.collect()
-            led.value(1)
-            push_url = base_url + "/solarsystem/live.json?key=" + FIREBASE_API_KEY
+        push_url = base_url + "/solarsystem/live.json?key=" + FIREBASE_API_KEY
+        if safe_firebase_put(push_url, local_data):
             local_data["system"]["firebase_status"] = "connected"
-            headers = {'Content-Type': 'application/json'}
-            res = urequests.put(push_url, data=json.dumps(local_data), headers=headers)
-            res.close()
-            del res, headers
-            gc.collect()
-            led.value(0)
-        except Exception as e:
-            log_info("Lỗi đẩy dữ liệu Firebase:", e)
+        else:
             local_data["system"]["firebase_status"] = "disconnected"
-            led.value(0)
     else:
         local_data["system"]["firebase_status"] = "disconnected"
 
@@ -611,18 +640,10 @@ def push_history_to_firebase():
         time_str = "{:02d}-{:02d}-{:02d}".format(now[3], now[4], now[5])
         history_url = "{}/solarsystem/history/{}/{}.json?key={}".format(base_url, date_str, time_str, FIREBASE_API_KEY)
         
-        gc.collect()
-        led.value(1)
-        headers = {'Content-Type': 'application/json'}
-        res = urequests.put(history_url, data=json.dumps(local_data), headers=headers)
-        res.close()
-        del res, headers
-        gc.collect()
-        log_info("Đã lưu dữ liệu lịch sử vào Firebase: {}/{}.".format(date_str, time_str))
-        led.value(0)
+        if safe_firebase_put(history_url, local_data):
+            log_info("Đã lưu dữ liệu lịch sử vào Firebase: {}/{}.".format(date_str, time_str))
     except Exception as e:
         log_info("Lỗi lưu dữ liệu lịch sử Firebase:", e)
-        led.value(0)
         gc.collect()
 
 # --- HÀM KIỂM TRA LỆNH RESET TỪ XA TỪ FIREBASE ---
@@ -630,13 +651,15 @@ def check_remote_commands():
     base_url = get_firebase_base_url()
     if not firebase_enabled or not base_url or not FIREBASE_API_KEY:
         return
+    res = None
     try:
+        gc.collect()
         cmd_url = "{}/solarsystem/commands/reset.json?key={}".format(base_url, FIREBASE_API_KEY)
         headers = {'Content-Type': 'application/json'}
         res = urequests.get(cmd_url, headers=headers)
         val = res.json()
         res.close()
-        del res
+        del res, headers
         gc.collect()
 
         if val is True or val == "reboot" or (isinstance(val, dict) and val.get("action") == "reboot"):
@@ -644,10 +667,7 @@ def check_remote_commands():
             
             # Xóa lệnh reset trên Firebase để tránh lặp vô tận
             clear_url = "{}/solarsystem/commands/reset.json?key={}".format(base_url, FIREBASE_API_KEY)
-            res_clear = urequests.put(clear_url, data="false", headers=headers)
-            res_clear.close()
-            del res_clear
-            gc.collect()
+            safe_firebase_put(clear_url, False)
 
             # Nháy LED báo hiệu 5 lần trước khi reset
             for _ in range(5):
@@ -658,7 +678,11 @@ def check_remote_commands():
 
             machine.reset()
     except Exception as e:
-        pass
+        if res:
+            try: res.close()
+            except: pass
+            del res
+        gc.collect()
 
 # --- HÀM TÍNH SẢN LƯỢNG NGÀY & THÁNG ---
 def calculate_daily_yield(current_data):
@@ -755,19 +779,12 @@ def push_daily_yield_to_firebase():
     try:
         date = daily_yield_data["date"]
         url = "{}/solarsystem/daily_yield/{}.json?key={}".format(base_url, date, FIREBASE_API_KEY)
-        gc.collect()
-        led.value(1)
-        headers = {'Content-Type': 'application/json'}
-        res = urequests.put(url, data=json.dumps(daily_yield_data), headers=headers)
-        res.close()
-        del res, headers
-        gc.collect()
-        log_info("Đã đẩy daily yield lên Firebase: {} -> {} kWh".format(date, daily_yield_data["total_yield_kwh"]))
-        led.value(0)
-        daily_yield_data = None
+        if safe_firebase_put(url, daily_yield_data):
+            log_info("Đã đẩy daily yield lên Firebase: {} -> {} kWh".format(date, daily_yield_data["total_yield_kwh"]))
+            daily_yield_data = None
     except Exception as e:
         log_info("Lỗi đẩy daily yield lên Firebase:", e)
-        led.value(0)
+        gc.collect()
 
 # --- VÒNG LẶP CHÍNH ---
 def main():
