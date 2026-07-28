@@ -624,6 +624,41 @@ def push_history_to_firebase():
         led.value(0)
         gc.collect()
 
+# --- HÀM KIỂM TRA LỆNH RESET TỪ XA TỪ FIREBASE ---
+def check_remote_commands():
+    base_url = get_firebase_base_url()
+    if not firebase_enabled or not base_url or not FIREBASE_API_KEY:
+        return
+    try:
+        cmd_url = "{}/solarsystem/commands/reset.json?key={}".format(base_url, FIREBASE_API_KEY)
+        headers = {'Content-Type': 'application/json'}
+        res = urequests.get(cmd_url, headers=headers)
+        val = res.json()
+        res.close()
+        del res
+        gc.collect()
+
+        if val is True or val == "reboot" or (isinstance(val, dict) and val.get("action") == "reboot"):
+            log_info("⚠️ NHẬN LỆNH RESET TỪ XA TỪ FIREBASE! ĐANG KHỞI ĐỘNG LẠI ESP32...")
+            
+            # Xóa lệnh reset trên Firebase để tránh lặp vô tận
+            clear_url = "{}/solarsystem/commands/reset.json?key={}".format(base_url, FIREBASE_API_KEY)
+            res_clear = urequests.put(clear_url, data="false", headers=headers)
+            res_clear.close()
+            del res_clear
+            gc.collect()
+
+            # Nháy LED báo hiệu 5 lần trước khi reset
+            for _ in range(5):
+                led.value(1)
+                time.sleep(0.1)
+                led.value(0)
+                time.sleep(0.1)
+
+            machine.reset()
+    except Exception as e:
+        pass
+
 # --- HÀM TÍNH SẢN LƯỢNG NGÀY & THÁNG ---
 def calculate_daily_yield(current_data):
     global yield_cache, daily_yield_data, local_data
@@ -740,6 +775,8 @@ def main():
     scan_interval = 10
     last_firebase_push = 0
     firebase_interval = 900
+    last_cmd_check = 0
+    cmd_check_interval = 10
     
     log_info("Mạch đã sẵn sàng chạy tác vụ nền!")
     while True:
@@ -754,6 +791,11 @@ def main():
         elif current_time - last_ntp_sync >= 3600:  # Chống lệch giờ RTC: Đồng bộ lại mỗi 1 giờ
             sync_ntp_time()
         
+        # 2. Kiểm tra lệnh điều khiển từ xa (Reset ESP32) từ Firebase (10s/lần)
+        if current_time - last_cmd_check >= cmd_check_interval:
+            check_remote_commands()
+            last_cmd_check = time.time()
+
         if current_time - last_modbus_scan >= scan_interval:
             task_modbus_scan()
             last_modbus_scan = time.time()
