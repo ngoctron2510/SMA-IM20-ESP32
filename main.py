@@ -145,33 +145,39 @@ yield_cache = load_yield_cache()
 daily_yield_data = None  # Sẽ được set khi tính daily yield
 
 
-# --- LẤY THÔNG TIN KẾT NỐI ETHERNET TỪ BOOT.PY ---
-lan = network.LAN()
-if lan.isconnected():
-    DEVICE_IP = lan.ifconfig()[0]
-    
-    # --- ĐỒNG BỘ THỜI GIAN QUA NTP (GOOGLE) & CHỈNH MÚI GIỜ GMT+7 ---
-    time_synced = False
-    for retry in range(5):
+# --- ĐỒNG BỘ THỜI GIAN QUA NTP (ĐỊNH KỲ & NHIỀU SERVER DỰ PHÒNG) ---
+time_synced = False
+last_ntp_sync = 0
+
+def sync_ntp_time():
+    global time_synced, last_ntp_sync
+    ntp_servers = ["time.google.com", "pool.ntp.org", "asia.pool.ntp.org", "time.windows.com"]
+    for server in ntp_servers:
         try:
-            ntptime.host = "time.google.com"
+            ntptime.host = server
             ntptime.settime()
-            # Chỉnh sang múi giờ GMT+7
+            # Chỉnh sang múi giờ GMT+7 Việt Nam
             rtc = machine.RTC()
             utc_plus_7 = time.time() + 7 * 3600
             tm = time.localtime(utc_plus_7)
             rtc.datetime((tm[0], tm[1], tm[2], tm[6], tm[3], tm[4], tm[5], 0))
-            log_info("Đồng bộ thời gian thành công (GMT+7):", "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5]))
+            log_info("Đồng bộ NTP thành công ({}) GMT+7: {:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(server, tm[0], tm[1], tm[2], tm[3], tm[4], tm[5]))
             time_synced = True
-            break
+            last_ntp_sync = time.time()
+            return True
         except Exception as e:
-            log_info("Lỗi đồng bộ thời gian (lần {}): {}".format(retry + 1, e))
-            time.sleep(2)
-    
-    if not time_synced:
-        log_info("Cảnh báo: Không thể đồng bộ thời gian, dữ liệu lịch sử sẽ không hoạt động!")
+            log_info("Lỗi đồng bộ NTP từ {}: {}".format(server, e))
+    time_synced = False
+    return False
+
+# --- LẤY THÔNG TIN KẾT NỐI ETHERNET TỪ BOOT.PY ---
+lan = network.LAN()
+if lan.isconnected():
+    DEVICE_IP = lan.ifconfig()[0]
+    log_info("Đã nhận IP Ethernet:", DEVICE_IP)
+    sync_ntp_time()
 else:
-    log_info("Thất bại: Không nhận được IP từ DHCP!")
+    log_info("Thất bại: Chưa nhận được IP từ DHCP!")
     time_synced = False
 
 # --- KHỞI TẠO WIFI ACCESS POINT (PHÁT WIFI) ---
@@ -729,7 +735,7 @@ def push_daily_yield_to_firebase():
 
 # --- VÒNG LẶP CHÍNH ---
 def main():
-    global time_synced
+    global time_synced, last_ntp_sync
     last_modbus_scan = 0
     scan_interval = 10
     last_firebase_push = 0
@@ -741,6 +747,13 @@ def main():
         
         current_time = time.time()
         
+        # 1. Tự động đồng bộ thời gian NTP định kỳ (mỗi 1 giờ) hoặc mỗi 30s nếu chưa đồng bộ thành công
+        if not time_synced:
+            if current_time - last_ntp_sync >= 30 or last_ntp_sync == 0:
+                sync_ntp_time()
+        elif current_time - last_ntp_sync >= 3600:  # Chống lệch giờ RTC: Đồng bộ lại mỗi 1 giờ
+            sync_ntp_time()
+        
         if current_time - last_modbus_scan >= scan_interval:
             task_modbus_scan()
             last_modbus_scan = time.time()
@@ -749,9 +762,12 @@ def main():
         if daily_yield_data is not None:
             push_daily_yield_to_firebase()
         
-        if time_synced and current_time - last_firebase_push >= firebase_interval:
-            push_history_to_firebase()
-            last_firebase_push = time.time()
+        if current_time - last_firebase_push >= firebase_interval:
+            if not time_synced:
+                sync_ntp_time()
+            if time_synced:
+                push_history_to_firebase()
+                last_firebase_push = time.time()
         
         if current_time % 30 < 0.1:
             gc.collect()
