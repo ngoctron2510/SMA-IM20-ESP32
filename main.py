@@ -8,6 +8,15 @@ import machine
 import ntptime
 import gc
 from machine import Pin
+
+try:
+    import ssl
+except ImportError:
+    try:
+        import ussl as ssl
+    except ImportError:
+        import tls as ssl
+
 try:
     from uModbusTCP import ModbusTCP, set_log_callback
 except ImportError:
@@ -532,9 +541,8 @@ def safe_firebase_put(url, data_dict):
 
         # 3. SSL Handshake với RAM liên tục tối đa
         if proto == 'https:':
-            import ussl
             gc.collect()
-            s = ussl.wrap_socket(s, server_hostname=host)
+            s = ssl.wrap_socket(s, server_hostname=host)
 
         # 4. Gửi HTTP PUT Request
         req_header = "PUT {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n".format(path, host, content_len)
@@ -593,9 +601,8 @@ def safe_firebase_get(url):
         s.connect(addr)
 
         if proto == 'https:':
-            import ussl
             gc.collect()
-            s = ussl.wrap_socket(s, server_hostname=host)
+            s = ssl.wrap_socket(s, server_hostname=host)
 
         req_header = "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n".format(path, host)
         s.sendall(req_header.encode('utf-8'))
