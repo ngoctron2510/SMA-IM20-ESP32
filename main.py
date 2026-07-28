@@ -186,6 +186,7 @@ ap.active(True)
 ap.config(essid="IM20 Monitor", password="lienanh123", authmode=3)
 log_info("Đã phát Wi-Fi AP. Tên: IM20 Monitor | Pass: lienanh123")
 log_info("IP Web UI qua Wi-Fi:", ap.ifconfig()[0])
+log_info("Phien ban v1.1 18/07/2026 18h00")
 
 # --- GIAO DIỆN HTML WEB SERVER (cache tĩnh, giảm phân mảnh heap) ---
 HTML_HEAD = """<!DOCTYPE html>
