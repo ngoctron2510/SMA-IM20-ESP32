@@ -1,22 +1,22 @@
 import network
 import time
-import webrepl
-import ota
 import machine
+import gc
 from machine import Pin
 
-# -------------------------------------------------------------
-# 1. CẤU HÌNH ETHERNET (Điều chỉnh theo phần cứng của bạn)
-# Ví dụ bên dưới phổ biến cho chip LAN8720
-# -------------------------------------------------------------
-lan = network.LAN(
-    mdc=machine.Pin(23),
-    mdio=machine.Pin(18),
-    power=machine.Pin(16),
-    phy_type=network.PHY_LAN8720,
-    phy_addr=1
-)
+# Tự động dọn dẹp bộ nhớ RAM khi heap dưới 8KB
+gc.threshold(8192)
 
+# --- KHỞI TẠO ETHERNET LAN8720 DÙNG CHUNG TOÀN HỆ THỐNG ---
+lan = network.LAN(id=0, 
+                  mdc=machine.Pin(18),      
+                  mdio=machine.Pin(2),     
+                  phy_type=network.PHY_LAN8720, 
+                  phy_addr=1, 
+                  power=None,               
+                  ref_clk=machine.Pin(17),  
+                  ref_clk_mode=Pin.OUT 
+                  )
 lan.active(True)
 
 print("Đang kết nối Ethernet...", end="")
@@ -30,28 +30,26 @@ if lan.isconnected():
     ip_info = lan.ifconfig()
     print(f"\n[Ethernet] Kết nối thành công! IP: {ip_info[0]}")
     
-    # ---------------------------------------------------------
-    # 2. KHỞI ĐỘNG WEBREPL
-    # ---------------------------------------------------------
+    # CHỈ IMPORT VÀ CHẠY OTA KHI ĐÃ CÓ MẠNG
     try:
-        webrepl.start()
-        print(f"[WebREPL] Đã bật tại ws://{ip_info[0]}:8266/")
+        import ota
+        ota.check_and_update()
     except Exception as e:
-        print("[WebREPL] Lỗi khi khởi động:", e)
+        print("[OTA] Lỗi kiểm tra OTA:", e)
 
-    # ---------------------------------------------------------
-    # 3. CHẠY OTA UPDATE
-    # ---------------------------------------------------------
-    ota.check_and_update()
-
+    # GIẢI PHÓNG TOÀN BỘ BỘ NHỚ CỦA OTA VÀ UREQUESTS KHỎI RAM
+    try:
+        import sys
+        if 'ota' in sys.modules:
+            del sys.modules['ota']
+        if 'urequests' in sys.modules:
+            del sys.modules['urequests']
+        del ota
+        print("[OTA] Đã xóa module OTA khỏi RAM trước khi chạy main.py")
+    except:
+        pass
+    gc.collect()
 else:
     print("\n[Ethernet] Lỗi: Không thể kết nối Ethernet!")
 
-# Tự động cấu hình mật khẩu cho WebREPL nếu chưa có
-try:
-    import webrepl_cfg
-except ImportError:
-    with open("webrepl_cfg.py", "w") as f:
-        # Thay '123456' bằng mật khẩu WebREPL bạn muốn
-        f.write("PASS = '123456'\n")
-    print("[WebREPL] Đã tạo file cấu hình mật khẩu mặc định: 123456")
+gc.collect()
