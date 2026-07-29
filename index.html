@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WT32-ETH01 Giám sát SMA</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f9; }
+        .container { max-width: 900px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1, h2 { color: #333; }
+        .card { background: #eef2f7; padding: 15px; margin-bottom: 15px; border-radius: 5px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
+        th { background-color: #007bff; color: white; }
+        input[type=text], input[type=password] { padding: 8px; width: 220px; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 8px 15px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    </style>
+    <script>
+        function updateStatus(id, status) {
+            let el = document.getElementById(id);
+            if(status === "connected") {
+                el.innerHTML = '<span style="color:green;font-weight:bold">&#9679; Kết nối</span>';
+            } else {
+                el.innerHTML = '<span style="color:red;font-weight:bold">&#9679; Mất kết nối</span>';
+            }
+        }
+        function updateFirebaseUI(enabled, customUrl, apiKey) {
+            let btn = document.getElementById('fb_toggle_btn');
+            let statusText = document.getElementById('fb_toggle_status');
+            if(enabled) {
+                btn.innerHTML = 'TẮT đẩy Firebase';
+                btn.style.background = '#dc3545';
+                statusText.innerHTML = '<span style="color:green;font-weight:bold">&#9679; Đang bật</span>';
+            } else {
+                btn.innerHTML = 'BẬT đẩy Firebase';
+                btn.style.background = '#28a745';
+                statusText.innerHTML = '<span style="color:red;font-weight:bold">&#9679; Đang tắt</span>';
+            }
+            let fbInput = document.getElementById('fb_url_input');
+            if(fbInput && customUrl !== undefined && document.activeElement !== fbInput) {
+                fbInput.value = customUrl;
+            }
+            let keyInput = document.getElementById('fb_key_input');
+            if(keyInput && apiKey !== undefined && document.activeElement !== keyInput) {
+                keyInput.value = apiKey;
+            }
+        }
+        function toggleFirebase() {
+            fetch('/toggle_firebase').then(r => r.json()).then(data => {
+                updateFirebaseUI(data.firebase_enabled);
+            });
+        }
+        function saveIP() {
+            let ip = document.getElementById('im20_ip_input').value.trim();
+            let notice = document.getElementById('ip_notice');
+            if(!ip) {
+                notice.style.color = 'red';
+                notice.innerText = 'Vui lòng nhập IP!';
+                return;
+            }
+            notice.style.color = '#007bff';
+            notice.innerText = 'Đang lưu...';
+            fetch('/set_ip?ip=' + encodeURIComponent(ip))
+                .then(r => r.json())
+                .then(data => {
+                    if(data.status === 'ok') {
+                        notice.style.color = 'green';
+                        notice.innerText = '✔ ' + (data.message || 'Đã lưu IP thành công!');
+                    } else {
+                        notice.style.color = 'red';
+                        notice.innerText = '✖ Lỗi: ' + data.message;
+                    }
+                    setTimeout(() => { notice.innerText = ''; }, 4000);
+                })
+                .catch(err => {
+                    notice.style.color = 'red';
+                    notice.innerText = '✖ Lỗi kết nối khi lưu IP!';
+                    setTimeout(() => { notice.innerText = ''; }, 4000);
+                });
+        }
+        function saveFirebaseUrl() {
+            let url = document.getElementById('fb_url_input').value.trim();
+            let key = document.getElementById('fb_key_input').value.trim();
+            let notice = document.getElementById('fb_notice');
+            notice.style.color = '#007bff';
+            notice.innerText = 'Đang lưu...';
+            fetch('/set_firebase_url?url=' + encodeURIComponent(url) + '&key=' + encodeURIComponent(key))
+                .then(r => r.json())
+                .then(data => {
+                    if(data.status === 'ok') {
+                        notice.style.color = 'green';
+                        notice.innerText = '✔ ' + (data.message || 'Đã lưu Firebase Config thành công!');
+                    } else {
+                        notice.style.color = 'red';
+                        notice.innerText = '✖ Lỗi: ' + data.message;
+                    }
+                    setTimeout(() => { notice.innerText = ''; }, 4000);
+                })
+                .catch(err => {
+                    notice.style.color = 'red';
+                    notice.innerText = '✖ Lỗi kết nối khi lưu Cấu hình!';
+                    setTimeout(() => { notice.innerText = ''; }, 4000);
+                });
+        }
+        setInterval(function() {
+            fetch('/data').then(response => response.json()).then(data => {
+                if(data.system) {
+                    let ipInput = document.getElementById('im20_ip_input');
+                    if(data.system.im20_ip && document.activeElement !== ipInput) {
+                        ipInput.value = data.system.im20_ip;
+                    }
+                    if(data.system.power_total !== undefined) {
+                        document.getElementById('sys_p').innerText = (data.system.power_total/1000).toFixed(2) + " kW";
+                        document.getElementById('sys_f').innerText = data.system.frequency + " Hz";
+                    } else {
+                        document.getElementById('sys_p').innerText = "-";
+                        document.getElementById('sys_f').innerText = "-";
+                    }
+                    if(data.system.device_ip) {
+                        document.getElementById('device_ip').innerText = data.system.device_ip;
+                    }
+                    if(data.system.today_yield_kwh !== undefined) {
+                        document.getElementById('today_yield').innerText = data.system.today_yield_kwh.toFixed(1);
+                    }
+                    if(data.system.month_yield_kwh !== undefined) {
+                        document.getElementById('month_yield').innerText = data.system.month_yield_kwh.toFixed(1);
+                    }
+                    updateStatus('im20_status', data.system.im20_status || 'disconnected');
+                    updateStatus('fb_status', data.system.firebase_status || 'disconnected');
+                    if(data.system.firebase_enabled !== undefined) {
+                        updateFirebaseUI(data.system.firebase_enabled, data.system.firebase_url_custom || '', data.system.firebase_api_key || '');
+                    }
+                }
+                
+                // Cập nhật Nhật ký Terminal Log (10 dòng gần nhất)
+                if(data.logs && Array.isArray(data.logs)) {
+                    let logBox = document.getElementById('sys_log_box');
+                    if(logBox) {
+                        let shouldScroll = (logBox.scrollHeight - logBox.clientHeight <= logBox.scrollTop + 30);
+                        logBox.innerText = data.logs.join('\n');
+                        if(shouldScroll) {
+                            logBox.scrollTop = logBox.scrollHeight;
+                        }
+                    }
+                }
+
+                let invTable = document.getElementById('inv_table_body');
+                invTable.innerHTML = "";
+                let invData = data.inverters || {};
+                let sortedKeys = Object.keys(invData).sort((a, b) => {
+                    let numA = parseInt(a.replace('inv_', ''));
+                    let numB = parseInt(b.replace('inv_', ''));
+                    return numA - numB;
+                });
+                document.getElementById('inv_online_count').innerText = sortedKeys.length;
+                if(sortedKeys.length > 0) {
+                    for (let key of sortedKeys) {
+                        let inv = invData[key];
+                        let row = `<tr>
+                            <td><b>${key.toUpperCase()}</b></td>
+                            <td>${inv.ia} / ${inv.ib} / ${inv.ic}</td>
+                            <td>${inv.va} / ${inv.vb} / ${inv.vc}</td>
+                            <td>${(inv.power/1000).toFixed(2)} kW</td>
+                        </tr>`;
+                        invTable.innerHTML += row;
+                    }
+                } else {
+                    invTable.innerHTML = '<tr><td colspan="4">Đang quét dữ liệu Modbus từ mạng LAN...</td></tr>';
+                }
+            });
+        }, 3000);
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>Hệ thống Giám sát SMA Modbus TCP (WT32-ETH01)</h1>
+        
+        <div class="card">
+            <h2>Cấu hình Hệ thống</h2>
+            <div style="margin-bottom:10px;">
+                <label>IP Inverter Manager (IM20): </label>
+                <input type="text" id="im20_ip_input" value="">
+                <button onclick="saveIP()">Cập nhật IP</button>
+                <span id="ip_notice" style="margin-left:10px;font-weight:bold"></span>
+            </div>
+            <hr style="margin:12px 0;border-color:#ddd">
+            <div style="margin-bottom:8px;">
+                <label>Firebase Database URL: </label>
+                <input type="text" id="fb_url_input" value="" placeholder="https://...firebasedatabase.app" style="width:260px">
+            </div>
+            <div>
+                <label>Firebase API Key: </label>
+                <input type="password" id="fb_key_input" value="" placeholder="AIzaSy..." style="width:260px">
+                <button onclick="saveFirebaseUrl()">Lưu Firebase Config</button>
+                <span id="fb_notice" style="margin-left:10px;font-weight:bold"></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Trạng thái kết nối</h2>
+            <p>IP thiết bị (WT32-ETH01): <span id="device_ip" style="font-weight:bold;color:#007bff">-</span></p>
+            <p>IM20 (Inverter Manager): <span id="im20_status"><span style="color:gray">&#9679; Đang chờ...</span></span></p>
+            <p>Firebase: <span id="fb_status"><span style="color:gray">&#9679; Đang chờ...</span></span></p>
+            <p>Đẩy dữ liệu Firebase: <span id="fb_toggle_status"><span style="color:gray">&#9679; Đang tắt</span></span>
+               <button id="fb_toggle_btn" onclick="toggleFirebase()" style="margin-left:10px;padding:6px 14px;background:#28a745;color:white;border:none;border-radius:4px;cursor:pointer">Đang tải...</button>
+            </p>
+        </div>
+        <div class="card">
+            <h2>Thông số tổng Hệ thống (IM20)</h2>
+            <p>Công suất tổng hệ thống: <span id="sys_p">-</span></p>
+            <p>Tần số mạng lưới: <span id="sys_f">-</span></p>
+            <p>⚡ Sản lượng hôm nay: <span id="today_yield" style="color:#e17055;font-weight:bold">--</span> kWh</p>
+            <p>📊 Sản lượng tháng này: <span id="month_yield" style="color:#00b894;font-weight:bold">--</span> kWh</p>
+        </div>
+
+        <div class="card">
+            <h2>Chi tiết Biến tần thành phần: <span id="inv_online_count" style="color:#007bff">0</span>/16 online</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Inverter ID</th>
+                        <th>Dòng 3 Pha (A) [Ia/Ib/Ic]</th>
+                        <th>Áp Pha (V) [Ua/Ub/Uc]</th>
+                        <th>Công suất (kW)</th>
+                    </tr>
+                </thead>
+                <tbody id="inv_table_body">
+                    <tr><td colspan="4">Đang quét dữ liệu Modbus từ mạng LAN...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="card" style="background:#1e272e;color:#55efc4">
+            <h2 style="color:#00d2d3;margin-top:0">📜 Nhật ký Hệ thống (Terminal Log)</h2>
+            <pre id="sys_log_box" style="height:140px;overflow-y:auto;background:#0d1117;color:#7ee787;padding:10px;border-radius:4px;font-family:'Consolas','Courier New',monospace;font-size:12px;margin:0;white-space:pre-wrap;word-break:break-all">Đang tải nhật ký...</pre>
+        </div>
+    </div>
+</body>
+</html>
