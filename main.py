@@ -50,22 +50,33 @@ def load_config():
                 firebase_enabled = cfg["firebase_enabled"]
             if "firebase_url_custom" in cfg:
                 firebase_url_custom = cfg["firebase_url_custom"]
+            elif "firebase_url" in cfg:
+                firebase_url_custom = cfg["firebase_url"]
             if "firebase_api_key" in cfg:
                 firebase_api_key = cfg["firebase_api_key"]
             return cfg
     except:
-        return {"im20_ip": "10.187.32.150"}
+        return {"im20_ip": ""}
 
-def save_config(config_data):
-    global firebase_enabled, firebase_url_custom, IM20_IP
-    cfg = {"im20_ip": IM20_IP, "firebase_enabled": firebase_enabled, "firebase_url_custom": firebase_url_custom}
-    cfg.update(config_data)
+def save_config(config_data=None):
+    global firebase_enabled, firebase_url_custom, firebase_api_key, IM20_IP
+    cfg = {
+        "im20_ip": IM20_IP, 
+        "firebase_enabled": firebase_enabled, 
+        "firebase_url": firebase_url_custom,
+        "firebase_url_custom": firebase_url_custom,
+        "firebase_api_key": firebase_api_key
+    }
+    if config_data:
+        cfg.update(config_data)
     with open('config.json', 'w') as f:
         json.dump(cfg, f)
 
 config = load_config()
-IM20_IP = config.get("im20_ip", "10.187.32.150")
-FIREBASE_API_KEY = firebase_api_key
+IM20_IP = config.get("im20_ip", "")
+FIREBASE_API_KEY = config.get("firebase_api_key", "")
+FIREBASE_DEFAULT_URL = config.get("firebase_url", config.get("firebase_url_custom", ""))
+firebase_url_custom = FIREBASE_DEFAULT_URL
 
 
 # --- HÀM ĐỒNG BỘ THỜI GIAN (chỉ dùng 1 server time.google.com, nhẹ) ---
@@ -119,20 +130,18 @@ yield_cache = load_yield_cache()
 daily_yield_data = None  # Sẽ được set khi tính daily yield
 
 
-# --- KHỞI TẠO ETHERNET CHO WT32-ETH01 (TÍCH HỢP SẴN LAN8720 + RJ45) ---
+# --- KIỂM TRA & SỬ DỤNG ETHERNET ĐÃ KHỞI TẠO TỪ BOOT.PY ---
 lan = network.LAN()
 if lan.isconnected():
-    log_info("Kết nối thành công!")
-    log_info("IP Mạch:", lan.ifconfig()[0])
+    log_info("Kết nối Ethernet thành công! IP Mạch:", lan.ifconfig()[0])
     DEVICE_IP = lan.ifconfig()[0]
-    
-    # --- ĐỒNG BỘ THỜI GIAN QUA NTP (GOOGLE) & CHỈNH MÚI GIỜ GMT+7 ---
     time_synced = sync_time()
     if not time_synced:
         log_info("Cảnh báo: Không thể đồng bộ thời gian, dữ liệu lịch sử sẽ không hoạt động!")
 else:
-    log_info("Thất bại: Không nhận được IP từ DHCP!")
+    log_info("Cảnh báo: Chưa nhận được IP Ethernet!")
     time_synced = False
+gc.collect()
 
 # --- KHỞI TẠO WIFI ACCESS POINT (PHÁT WIFI) ---
 ap = network.WLAN(network.AP_IF)
@@ -203,12 +212,30 @@ def handle_web_server():
             res_msg = {"status": "ok", "message": "Đã lưu Firebase URL thành công!"}
             try:
                 query = request.split(' ')[1]
-                new_url = query.split('url=')[1].split('&')[0]
-                new_url = new_url.replace('%3A', ':').replace('%2F', '/').replace('%3F', '?').replace('%3D', '=').replace('%26', '&')
-                firebase_url_custom = new_url
-                FIREBASE_DEFAULT_URL = new_url
-                save_config({"firebase_url_custom": new_url, "firebase_url": new_url})
-                log_info("Đã lưu Firebase URL mới:", new_url)
+                raw_val = query.split('url=')[1].split('&')[0]
+                raw_val = raw_val.replace('%3A', ':').replace('%2F', '/').replace('%3F', '?').replace('%3D', '=').replace('%26', '&').replace('%2C', ',')
+                
+                if ',' in raw_val:
+                    parts = raw_val.split(',', 1)
+                    new_url = parts[0].strip()
+                    new_key = parts[1].strip()
+                    firebase_url_custom = new_url
+                    FIREBASE_DEFAULT_URL = new_url
+                    FIREBASE_API_KEY = new_key
+                    firebase_api_key = new_key
+                    save_config({
+                        "firebase_url_custom": new_url, 
+                        "firebase_url": new_url,
+                        "firebase_api_key": new_key
+                    })
+                    log_info("Đã cập nhật Firebase URL và API Key mới!")
+                    res_msg = {"status": "ok", "message": "Đã lưu URL & API Key thành công!"}
+                else:
+                    new_url = raw_val.strip()
+                    firebase_url_custom = new_url
+                    FIREBASE_DEFAULT_URL = new_url
+                    save_config({"firebase_url_custom": new_url, "firebase_url": new_url})
+                    log_info("Đã lưu Firebase URL mới:", new_url)
             except Exception as e:
                 res_msg = {"status": "error", "message": str(e)}
             conn.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
