@@ -65,12 +65,8 @@ def save_config(config_data):
 
 config = load_config()
 IM20_IP = config.get("im20_ip", "10.187.32.150")
-# --- CẤU HÌNH FIREBASE PROJECT ---
-#FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM"
 FIREBASE_API_KEY = firebase_api_key
-#FIREBASE_PROJECT_ID = "im20-test"
-#FIREBASE_DEFAULT_URL = "https://im20-test-default-rtdb.asia-southeast1.firebasedatabase.app"
-#FIREBASE_URL = FIREBASE_DEFAULT_URL + "/solarsystem/live.json?key=" + FIREBASE_API_KEY
+
 
 # --- HÀM ĐỒNG BỘ THỜI GIAN (chỉ dùng 1 server time.google.com, nhẹ) ---
 def sync_time():
