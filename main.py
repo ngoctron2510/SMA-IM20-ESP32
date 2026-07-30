@@ -381,7 +381,7 @@ def calculate_daily_yield(current_data):
         if prev_total > 0:
             daily_wh = curr_total - prev_total
             if daily_wh >= 0:
-                daily_yield_kwh = round(daily_wh / 1000, 2)
+                daily_yield_kwh = round(daily_wh / 1000, 3)
                 daily_yield_data = {
                     "date": yield_cache["last_date"],
                     "total_yield_kwh": daily_yield_kwh,
@@ -394,7 +394,7 @@ def calculate_daily_yield(current_data):
                         daily_inv_wh = curr_ywh - prev_ywh
                         if daily_inv_wh >= 0:
                             daily_yield_data["inverters"][inv_key] = {
-                                "yield_kwh": round(daily_inv_wh / 1000, 2)
+                                "yield_kwh": round(daily_inv_wh / 1000, 3)
                             }
                 local_data["system"]["today_yield_kwh"] = daily_yield_kwh
                 log_info("Daily yield tính cho {}: {} kWh".format(
