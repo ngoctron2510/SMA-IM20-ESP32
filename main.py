@@ -67,7 +67,7 @@ def save_config(config_data):
 
 config = load_config()
 IM20_IP = config.get("im20_ip", "10.187.32.150")
-FIREBASE_API_KEY = firebase_api_key
+FIREBASE_API_KEY = config.get("firebase_api_key")
 
 
 # --- HÀM ĐỒNG BỘ THỜI GIAN (chỉ dùng 1 server time.google.com, nhẹ) ---
