@@ -42,7 +42,7 @@ firebase_url_custom = ""
 
 # --- ĐỌC/GHI CẤU HÌNH TỪ FLASH ---
 def load_config():
-    global firebase_enabled, firebase_url_custom, firebase_api_key
+    global firebase_enabled, firebase_url_custom
     try:
         with open('config.json', 'r') as f:
             cfg = json.load(f)
@@ -52,8 +52,6 @@ def load_config():
                 firebase_url_custom = cfg["firebase_url_custom"]
             elif "firebase_url" in cfg:
                 firebase_url_custom = cfg["firebase_url"]
-            elif "firebase_api_key" in cfg:
-                firebase_api_key = cfg["firebase_api_key"]
             return cfg
     except:
         return {"im20_ip": "10.187.32.150"}
