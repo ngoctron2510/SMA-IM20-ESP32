@@ -32,7 +32,7 @@ def log_info(*args):
         pass
 
 # --- KHỞI TẠO NGOẠI VI PHẦN CỨNG THỰC TẾ ---
-# Cấu hình LED trạng thái tại GPIO12 (HIGH = Sáng)
+# Cấu hình LED trạng thái tại GPIO12 (HIGH = Sáng) phiên bản bo xanh đã tích hợp, nếu là bo WT32-ETH0 thì chỉnh lại GPIO22
 led = Pin(12, Pin.OUT)
 led.value(0) # Ban đầu tắt LED
 
