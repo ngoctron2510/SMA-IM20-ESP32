@@ -368,7 +368,7 @@ def calculate_daily_yield(current_data):
     start_month_total = yield_cache.get("start_of_month", {}).get("total_yield_wh", 0)
     if curr_total > 0 and start_month_total > 0 and curr_total >= start_month_total:
         month_wh = curr_total - start_month_total
-        local_data["system"]["month_yield_kwh"] = round(month_wh / 1000, 2)
+        local_data["system"]["month_yield_kwh"] = round(month_wh / 1000, 3)
     else:
         local_data["system"]["month_yield_kwh"] = 0
 
