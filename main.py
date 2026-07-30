@@ -42,7 +42,7 @@ firebase_url_custom = ""
 
 # --- ĐỌC/GHI CẤU HÌNH TỪ FLASH ---
 def load_config():
-    global firebase_enabled, firebase_url_custom
+    global firebase_enabled, firebase_url_custom, firebase_api_key
     try:
         with open('config.json', 'r') as f:
             cfg = json.load(f)
@@ -52,6 +52,8 @@ def load_config():
                 firebase_url_custom = cfg["firebase_url_custom"]
             elif "firebase_url" in cfg:
                 firebase_url_custom = cfg["firebase_url"]
+            elif "firebase_api_key" in cfg:
+                firebase_api_key = cfg["firebase_api_key"]
             return cfg
     except:
         return {"im20_ip": "10.187.32.150"}
@@ -65,9 +67,7 @@ def save_config(config_data):
 
 config = load_config()
 IM20_IP = config.get("im20_ip", "10.187.32.150")
-FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM"
-FIREBASE_PROJECT_ID = "im20-test"
-FIREBASE_DEFAULT_URL = "https://im20-test-default-rtdb.asia-southeast1.firebasedatabase.app"
+FIREBASE_API_KEY = firebase_api_key
 
 
 # --- HÀM ĐỒNG BỘ THỜI GIAN (chỉ dùng 1 server time.google.com, nhẹ) ---
