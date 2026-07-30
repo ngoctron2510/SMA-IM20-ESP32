@@ -54,7 +54,7 @@ def load_config():
                 firebase_url_custom = cfg["firebase_url"]
             return cfg
     except:
-        return {"im20_ip": "10.187.32.150"}
+        return {"im20_ip": "172.16.32.119"}
 
 def save_config(config_data):
     global firebase_enabled, firebase_url_custom, IM20_IP
@@ -64,8 +64,8 @@ def save_config(config_data):
         json.dump(cfg, f)
 
 config = load_config()
-IM20_IP = config.get("im20_ip", "10.187.32.150")
-FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM"
+IM20_IP = config.get("im20_ip", "172.16.32.119")
+FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM" #Cập nhật API_KEY cho dự án firebase, sai api_key sẽ không ghi dữ liệu được
 
 
 # --- HÀM ĐỒNG BỘ THỜI GIAN (chỉ dùng 1 server time.google.com, nhẹ) ---
