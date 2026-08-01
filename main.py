@@ -268,7 +268,7 @@ def task_modbus_scan():
         if data_yield_total and len(data_yield_total) >= 2:
             raw = (data_yield_total[0] << 16) | data_yield_total[1]
             if raw != 0xFFFFFFFF:
-                payload["system"]["total_yield_wh"] = raw * 1000  # WH_SF=3
+                payload["system"]["total_yield_wh"] = raw  # WH_SF=3
 
         for inv_id in range(126, 142):
             if f"inv_{inv_id}" not in payload["inverters"]:
