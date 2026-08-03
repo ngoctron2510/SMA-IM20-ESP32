@@ -7,12 +7,6 @@ from machine import Pin
 # Tự động dọn dẹp bộ nhớ RAM khi heap dưới 8KB
 gc.threshold(8192)
 
-# --- CẤU HÌNH LED TRẠNG THÁI (CHỈNH TRƯỚC KHI NẠP THIẾT BỊ) ---
-# Chọn đúng chân LED theo bo mạch, đổi dòng dưới đây rồi mới nạp, không cần sửa main.py:
-# LED_PIN = 12        # Bo xanh tích hợp
-LED_PIN = 22      # Bo WT32-ETH0
-led = Pin(LED_PIN, Pin.OUT)
-led.value(0)        # Ban đầu tắt LED
 '''
 # --- KHỞI TẠO ETHERNET CHO WT32-ETH01 v1.4 (LAN8720 + RJ45) ---
 # Pinout chuẩn WT32-ETH01 v1.4:
