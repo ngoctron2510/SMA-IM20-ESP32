@@ -34,7 +34,7 @@ def log_info(*args):
 # --- NGOẠI VI PHẦN CỨNG ---
 # --- CẤU HÌNH LED TRẠNG THÁI (CHỈNH TRƯỚC KHI NẠP THIẾT BỊ) ---
 # Chọn đúng chân LED theo bo mạch, đổi dòng dưới đây rồi mới nạp, không cần sửa main.py:
- LED_PIN = 12        # Bo xanh tích hợp
+LED_PIN = 12        # Bo xanh tích hợp
 led = Pin(LED_PIN, Pin.OUT)
 led.value(0)        # Ban đầu tắt LED
 
