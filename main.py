@@ -269,7 +269,10 @@ def task_modbus_scan():
         if data_yield_total and len(data_yield_total) >= 2:
             raw = (data_yield_total[0] << 16) | data_yield_total[1]
             if raw != 0xFFFFFFFF:
-                payload["system"]["total_yield_wh"] = raw   # WH_SF=3
+                # Đồng bộ với index.html: giá trị raw (chênh lệch 2 ngày) đã là kWh, KHÔNG nhân 1000.
+                # VD 08-03: raw=7.553.008 -> diff 498 kWh ≈ tổng inverter 490 kWh.
+                # Nếu nhân 1000 sẽ ra 7,55 tỷ -> daily_yield sai 1000 lần.
+                payload["system"]["total_yield_wh"] = raw  # WH_SF=3
 
         for inv_id in range(126, 142):
             if f"inv_{inv_id}" not in payload["inverters"]:
@@ -544,4 +547,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
