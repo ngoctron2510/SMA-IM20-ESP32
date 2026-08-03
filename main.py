@@ -31,8 +31,10 @@ def log_info(*args):
     except:
         pass
 
-# --- KHỞI TẠO NGOẠI VI PHẦN CỨNG THỰC TẾ ---trong file boot.py
-led.value(0) # Ban đầu tắt LED
+# --- NGOẠI VI PHẦN CỨNG ---
+# Đối tượng `led` đã được khởi tạo sẵn trong boot.py (chỉnh chân LED tại đó trước khi nạp thiết bị).
+# Ở đây chỉ đảm bảo trạng thái ban đầu là TẮT.
+led.value(0)  # Ban đầu tắt LED
 
 # Biến điều khiển đẩy Firebase (khai báo trước để load_config dùng global)
 firebase_enabled = False  # Mặc định TẮT đẩy Firebase
@@ -65,8 +67,8 @@ config = load_config()
 IM20_IP = config.get("im20_ip", "172.16.32.119") #IP của IM20 thực tế
 # IM20_IP = config.get("im20_ip", "10.187.32.150") # Test kết nối IM mô phỏng
 #Cập nhật API_KEY cho dự án firebase, sai api_key sẽ không ghi dữ liệu được
-#FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM" # Server test
-FIREBASE_API_KEY = "AIzaSyAwtFVfjPctaUtFR591VENo_BB7P4L5bDQ" # Server vận hành web
+FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM" # Server test
+#FIREBASE_API_KEY = "AIzaSyAwtFVfjPctaUtFR591VENo_BB7P4L5bDQ" # Server vận hành web
 
 
 # --- HÀM ĐỒNG BỘ THỜI GIAN (chỉ dùng 1 server time.google.com, nhẹ) ---
@@ -261,16 +263,16 @@ def task_modbus_scan():
             time.sleep(0.02)
 
         # 3. Đọc Total Yield (Sản lượng tích lũy) theo SunSpec
-        data_yield_total = client.read_holding_registers(125, 40209, 2)
+        data_yield_total = client.read_holding_registers(125, 40210, 2)
         if data_yield_total and len(data_yield_total) >= 2:
             raw = (data_yield_total[0] << 16) | data_yield_total[1]
             if raw != 0xFFFFFFFF:
-                payload["system"]["total_yield_wh"] = raw  # WH_SF=3
+                payload["system"]["total_yield_wh"] = raw * 1000  # WH_SF=3
 
         for inv_id in range(126, 142):
             if f"inv_{inv_id}" not in payload["inverters"]:
                 continue
-            data_yield_inv = client.read_holding_registers(inv_id, 40209, 2)
+            data_yield_inv = client.read_holding_registers(inv_id, 40210, 2)
             if data_yield_inv and len(data_yield_inv) >= 2:
                 raw = (data_yield_inv[0] << 16) | data_yield_inv[1]
                 if raw != 0xFFFFFFFF and raw != 0:
@@ -364,12 +366,13 @@ def calculate_daily_yield(current_data):
     prev_month = yield_cache.get("start_of_month", {}).get("month", "")
     if month_str != prev_month:
         yield_cache["start_of_month"] = {"month": month_str, "total_yield_wh": curr_total}
-        log_info("Cập nhật start_of_month: {} -> {} Wh".format(month_str, curr_total))
+        log_info("Cập nhật start_of_month: {} -> {} kWh".format(month_str, curr_total))
 
     start_month_total = yield_cache.get("start_of_month", {}).get("total_yield_wh", 0)
     if curr_total > 0 and start_month_total > 0 and curr_total >= start_month_total:
         month_wh = curr_total - start_month_total
-        local_data["system"]["month_yield_kwh"] = round(month_wh / 1000, 3)
+        # ID 125 sản lượng tổng đã là kWh (không chia 1000) - đồng bộ với index.html
+        local_data["system"]["month_yield_kwh"] = round(month_wh, 3)
     else:
         local_data["system"]["month_yield_kwh"] = 0
 
@@ -382,7 +385,9 @@ def calculate_daily_yield(current_data):
         if prev_total > 0:
             daily_wh = curr_total - prev_total
             if daily_wh >= 0:
-                daily_yield_kwh = round(daily_wh / 1000, 3)
+                # ID 125 sản lượng tổng đã là kWh: KHÔNG chia 1000 (đồng bộ với index.html).
+                # VD thực tế 08-03: diff=177 ≈ tổng inverter 175.8 kWh, nếu /1000 sẽ ra 0.17 (sai 1000 lần).
+                daily_yield_kwh = round(daily_wh, 3)
                 daily_yield_data = {
                     "date": yield_cache["last_date"],
                     "total_yield_kwh": daily_yield_kwh,
@@ -394,6 +399,7 @@ def calculate_daily_yield(current_data):
                     if curr_ywh > 0 and prev_ywh > 0:
                         daily_inv_wh = curr_ywh - prev_ywh
                         if daily_inv_wh >= 0:
+                            # Inverter (ID 126-141) yield_wh là Wh -> CẦN chia 1000 để ra kWh
                             daily_yield_data["inverters"][inv_key] = {
                                 "yield_kwh": round(daily_inv_wh / 1000, 3)
                             }
@@ -536,5 +542,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
