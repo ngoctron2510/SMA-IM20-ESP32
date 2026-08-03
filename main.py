@@ -31,10 +31,7 @@ def log_info(*args):
     except:
         pass
 
-# --- KHỞI TẠO NGOẠI VI PHẦN CỨNG THỰC TẾ ---
-# Cấu hình LED trạng thái tại GPIO12 (HIGH = Sáng) phiên bản bo xanh đã tích hợp, nếu là bo WT32-ETH0 thì chỉnh lại GPIO22
-led = Pin(12, Pin.OUT)    # Bo xanh tích hợp
-#led = Pin(22, Pin.OUT)    # Bo WT32-ETH0
+# --- KHỞI TẠO NGOẠI VI PHẦN CỨNG THỰC TẾ ---trong file boot.py
 led.value(0) # Ban đầu tắt LED
 
 # Biến điều khiển đẩy Firebase (khai báo trước để load_config dùng global)
