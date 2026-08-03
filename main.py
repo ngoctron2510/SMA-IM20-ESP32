@@ -69,8 +69,8 @@ config = load_config()
 IM20_IP = config.get("im20_ip", "172.16.32.119") #IP của IM20 thực tế
 # IM20_IP = config.get("im20_ip", "10.187.32.150") # Test kết nối IM mô phỏng
 #Cập nhật API_KEY cho dự án firebase, sai api_key sẽ không ghi dữ liệu được
-FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM" # Server test
-#FIREBASE_API_KEY = "AIzaSyAwtFVfjPctaUtFR591VENo_BB7P4L5bDQ" # Server vận hành web
+#FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM" # Server test
+FIREBASE_API_KEY = "AIzaSyAwtFVfjPctaUtFR591VENo_BB7P4L5bDQ" # Server vận hành web
 
 
 # --- HÀM ĐỒNG BỘ THỜI GIAN (chỉ dùng 1 server time.google.com, nhẹ) ---
