@@ -32,9 +32,11 @@ def log_info(*args):
         pass
 
 # --- NGOẠI VI PHẦN CỨNG ---
-# Đối tượng `led` đã được khởi tạo sẵn trong boot.py (chỉnh chân LED tại đó trước khi nạp thiết bị).
-# Ở đây chỉ đảm bảo trạng thái ban đầu là TẮT.
-led.value(0)  # Ban đầu tắt LED
+# --- CẤU HÌNH LED TRẠNG THÁI (CHỈNH TRƯỚC KHI NẠP THIẾT BỊ) ---
+# Chọn đúng chân LED theo bo mạch, đổi dòng dưới đây rồi mới nạp, không cần sửa main.py:
+ LED_PIN = 12        # Bo xanh tích hợp
+led = Pin(LED_PIN, Pin.OUT)
+led.value(0)        # Ban đầu tắt LED
 
 # Biến điều khiển đẩy Firebase (khai báo trước để load_config dùng global)
 firebase_enabled = False  # Mặc định TẮT đẩy Firebase
