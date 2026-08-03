@@ -265,7 +265,7 @@ def task_modbus_scan():
             time.sleep(0.02)
 
         # 3. Đọc Total Yield (Sản lượng tích lũy) theo SunSpec
-        data_yield_total = client.read_holding_registers(125, 40210, 2)
+        data_yield_total = client.read_holding_registers(125, 40209, 2)
         if data_yield_total and len(data_yield_total) >= 2:
             raw = (data_yield_total[0] << 16) | data_yield_total[1]
             if raw != 0xFFFFFFFF:
@@ -274,7 +274,7 @@ def task_modbus_scan():
         for inv_id in range(126, 142):
             if f"inv_{inv_id}" not in payload["inverters"]:
                 continue
-            data_yield_inv = client.read_holding_registers(inv_id, 40210, 2)
+            data_yield_inv = client.read_holding_registers(inv_id, 40209, 2)
             if data_yield_inv and len(data_yield_inv) >= 2:
                 raw = (data_yield_inv[0] << 16) | data_yield_inv[1]
                 if raw != 0xFFFFFFFF and raw != 0:
