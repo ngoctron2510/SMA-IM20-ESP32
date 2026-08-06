@@ -385,43 +385,68 @@ def calculate_daily_yield(current_data):
         local_data["system"]["today_yield_kwh"] = 0
         return  # Chưa có dữ liệu yield
 
-    if today_str != yield_cache.get("last_date", "") and yield_cache.get("last_date", ""):
-        prev_total = yield_cache.get("total_yield_wh", 0)
-        if prev_total > 0:
-            daily_wh = curr_total - prev_total
-            if daily_wh >= 0:
-                # ID 125 sản lượng tổng đã là kWh: KHÔNG chia 1000 (đồng bộ với index.html).
-                # VD thực tế 08-03: diff=177 ≈ tổng inverter 175.8 kWh, nếu /1000 sẽ ra 0.17 (sai 1000 lần).
-                daily_yield_kwh = round(daily_wh, 3)
-                daily_yield_data = {
-                    "date": yield_cache["last_date"],
-                    "total_yield_kwh": daily_yield_kwh,
-                    "inverters": {}
-                }
-                for inv_key, inv in inv_data.items():
-                    curr_ywh = inv.get("yield_wh", 0)
-                    prev_ywh = yield_cache.get("inverters", {}).get(inv_key, {}).get("yield_wh", 0)
-                    if curr_ywh > 0 and prev_ywh > 0:
-                        daily_inv_wh = curr_ywh - prev_ywh
-                        if daily_inv_wh >= 0:
-                            # Inverter (ID 126-141) yield_wh là Wh -> CẦN chia 1000 để ra kWh
-                            daily_yield_data["inverters"][inv_key] = {
-                                "yield_kwh": round(daily_inv_wh / 1000, 3)
-                            }
-                local_data["system"]["today_yield_kwh"] = daily_yield_kwh
-                log_info("Daily yield tính cho {}: {} kWh".format(
-                    yield_cache["last_date"], daily_yield_kwh))
+    # ═══════════════════════════════════════════════════════════════════
+    # SỬA LỖI "sản lượng ngày hôm trước = 0":
+    # - Cũ: yield_cache["total_yield_wh"] được cập nhật MỖI lần quét (10s).
+    #   Lúc 00:00 ngày mới: prev_total ≈ total cuối ngày hôm trước (~23:59),
+    #   mà total là TÍCH LŨY TRỌN ĐỜI (không đổi qua đêm) nên
+    #   daily = curr_total(00:00) - prev_total(23:59) ≈ 0  → SAI.
+    # - Mới: cache giữ baseline = total tại ĐẦU NGÀY (~00:00), CHỈ cập nhật
+    #   khi đổi ngày. Khi đó daily của hôm trước =
+    #   curr_total(00:00 hôm nay) - baseline(00:00 hôm qua) = ĐÚNG cả ngày hôm trước.
+    # ═══════════════════════════════════════════════════════════════════
+    last_date = yield_cache.get("last_date", "")
 
-    yield_cache["last_date"] = today_str
-    yield_cache["total_yield_wh"] = curr_total
-    if "inverters" not in yield_cache:
-        yield_cache["inverters"] = {}
-    for inv_key, inv in inv_data.items():
-        ywh = inv.get("yield_wh", 0)
-        if ywh > 0:
-            if inv_key not in yield_cache["inverters"]:
-                yield_cache["inverters"][inv_key] = {}
-            yield_cache["inverters"][inv_key]["yield_wh"] = ywh
+    if today_str != last_date and last_date:
+        # ── Lần quét đầu tiên của ngày mới: tính daily cho NGÀY HÔM TRƯỚC ──
+        prev_total = yield_cache.get("total_yield_wh", 0)   # baseline đầu ngày hôm qua
+        if prev_total > 0 and curr_total >= prev_total:
+            daily_wh = curr_total - prev_total
+            # ID 125 sản lượng tổng đã là kWh: KHÔNG chia 1000 (đồng bộ với index.html).
+            # VD thực tế 08-03: diff=177 ≈ tổng inverter 175.8 kWh, nếu /1000 sẽ ra 0.17 (sai 1000 lần).
+            daily_yield_kwh = round(daily_wh, 3)
+            daily_yield_data = {
+                "date": last_date,
+                "total_yield_kwh": daily_yield_kwh,
+                "inverters": {}
+            }
+            prev_invs = yield_cache.get("inverters", {})
+            for inv_key, inv in inv_data.items():
+                curr_ywh = inv.get("yield_wh", 0)
+                prev_ywh = prev_invs.get(inv_key, {}).get("yield_wh", 0)
+                if curr_ywh > 0 and prev_ywh > 0:
+                    daily_inv_wh = curr_ywh - prev_ywh
+                    if daily_inv_wh >= 0:
+                        # Inverter (ID 126-141) yield_wh là Wh -> CẦN chia 1000 để ra kWh
+                        daily_yield_data["inverters"][inv_key] = {
+                            "yield_kwh": round(daily_inv_wh / 1000, 3)
+                        }
+            local_data["system"]["today_yield_kwh"] = daily_yield_kwh
+            log_info("Daily yield tính cho {}: {} kWh".format(last_date, daily_yield_kwh))
+
+        # Cập nhật baseline mới = total tại ĐẦU NGÀY MỚI (chỉ ở mốc đổi ngày)
+        yield_cache["last_date"] = today_str
+        yield_cache["total_yield_wh"] = curr_total
+        if "inverters" not in yield_cache:
+            yield_cache["inverters"] = {}
+        for inv_key, inv in inv_data.items():
+            ywh = inv.get("yield_wh", 0)
+            if ywh > 0:
+                yield_cache["inverters"][inv_key] = {"yield_wh": ywh}
+    else:
+        # ── Cùng ngày: GIỮ NGUYÊN baseline (không cập nhật total mỗi lần quét) ──
+        # để daily ở mốc đổi ngày không bị triệt tiêu.
+        # Chỉ khởi tạo baseline nếu chưa có (lần đầu chạy / cache mới / sau reset).
+        if not last_date:
+            yield_cache["last_date"] = today_str
+            yield_cache["total_yield_wh"] = curr_total
+            if "inverters" not in yield_cache:
+                yield_cache["inverters"] = {}
+            for inv_key, inv in inv_data.items():
+                ywh = inv.get("yield_wh", 0)
+                if ywh > 0:
+                    yield_cache["inverters"][inv_key] = {"yield_wh": ywh}
+
     save_yield_cache(yield_cache)
 
 
@@ -547,3 +572,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
