@@ -71,7 +71,7 @@ IM20_IP = config.get("im20_ip", "172.16.32.119") #IP của IM20 thực tế
 #Cập nhật API_KEY cho dự án firebase, sai api_key sẽ không ghi dữ liệu được
 #FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM" # Server test
 FIREBASE_API_KEY = "AIzaSyAwtFVfjPctaUtFR591VENo_BB7P4L5bDQ" # Server vận hành web
-log_info("Firebase API key là " + FIREBASE_API_KEY)
+#log_info("Firebase API key là " + FIREBASE_API_KEY)
 log_info("Version 1.2 06/08/2026 17:05")
 
 # --- HÀM ĐỒNG BỘ THỜI GIAN (chỉ dùng 1 server time.google.com, nhẹ) ---
