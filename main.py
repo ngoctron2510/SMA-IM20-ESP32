@@ -2,6 +2,7 @@ import network
 import time
 import urequests
 import json
+import os
 import socket
 import ustruct
 import machine
@@ -30,7 +31,16 @@ def log_info(*args):
             sys_logs.pop(0)
     except:
         pass
-
+'''
+def log_mem_health(tag):
+    """Ghi log tình trạng bộ nhớ: heap Python + phiên bản firmware."""
+    log_info(tag, "heap Python trống:", gc.mem_free(), "bytes")
+    try:
+        u = os.uname()
+        log_info(tag, "Firmware MicroPython", u.release, "-", u.machine)
+    except Exception:
+        pass
+'''
 # --- NGOẠI VI PHẦN CỨNG ---
 # --- CẤU HÌNH LED TRẠNG THÁI (CHỈNH TRƯỚC KHI NẠP THIẾT BỊ) ---
 # Chọn đúng chân LED theo bo mạch, đổi dòng dưới đây rồi mới nạp, không cần sửa main.py:
@@ -41,10 +51,11 @@ led.value(0)        # Ban đầu tắt LED
 # Biến điều khiển đẩy Firebase (khai báo trước để load_config dùng global)
 firebase_enabled = False  # Mặc định TẮT đẩy Firebase
 firebase_url_custom = ""
+yield_snapshot_interval = 3600  # Chu kỳ lưu snapshot yield (giây), mặc định 1 giờ
 
 # --- ĐỌC/GHI CẤU HÌNH TỪ FLASH ---
 def load_config():
-    global firebase_enabled, firebase_url_custom
+    global firebase_enabled, firebase_url_custom, yield_snapshot_interval
     try:
         with open('config.json', 'r') as f:
             cfg = json.load(f)
@@ -54,13 +65,15 @@ def load_config():
                 firebase_url_custom = cfg["firebase_url_custom"]
             elif "firebase_url" in cfg:
                 firebase_url_custom = cfg["firebase_url"]
+            if "yield_snapshot_interval" in cfg:
+                yield_snapshot_interval = cfg["yield_snapshot_interval"]
             return cfg
     except:
         return {"im20_ip": "172.16.32.119"}
 
 def save_config(config_data):
-    global firebase_enabled, firebase_url_custom, IM20_IP
-    cfg = {"im20_ip": IM20_IP, "firebase_enabled": firebase_enabled, "firebase_url_custom": firebase_url_custom}
+    global firebase_enabled, firebase_url_custom, IM20_IP, yield_snapshot_interval
+    cfg = {"im20_ip": IM20_IP, "firebase_enabled": firebase_enabled, "firebase_url_custom": firebase_url_custom, "yield_snapshot_interval": yield_snapshot_interval}
     cfg.update(config_data)
     with open('config.json', 'w') as f:
         json.dump(cfg, f)
@@ -72,7 +85,6 @@ IM20_IP = config.get("im20_ip", "172.16.32.119") #IP của IM20 thực tế
 #FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM" # Server test
 FIREBASE_API_KEY = "AIzaSyAwtFVfjPctaUtFR591VENo_BB7P4L5bDQ" # Server vận hành web
 #log_info("Firebase API key là " + FIREBASE_API_KEY)
-#log_info("Version 1.2 06/08/2026 17:05")
 
 # --- HÀM ĐỒNG BỘ THỜI GIAN (chỉ dùng 1 server time.google.com, nhẹ) ---
 def sync_time():
@@ -97,32 +109,65 @@ def sync_time():
     time_synced = False
     return False
 
-# --- YIELD CACHE (lưu giá trị yield cuối cùng để tính daily) ---
-YIELD_CACHE_FILE = "yield_cache.json"
-
-def load_yield_cache():
-    """Đọc yield cache từ flash, trả về dict"""
-    try:
-        with open(YIELD_CACHE_FILE, 'r') as f:
-            return json.load(f)
-    except:
-        return {"last_date": "", "total_yield_wh": 0, "inverters": {}}
-
-def save_yield_cache(cache):
-    """Ghi yield cache vào flash"""
-    try:
-        with open(YIELD_CACHE_FILE, 'w') as f:
-            json.dump(cache, f)
-    except:
-        pass
-
 # Biến toàn cục
 local_data = {"system": {}, "inverters": {}}
 DEVICE_IP = "0.0.0.0"
 
-# Yield tracking
-yield_cache = load_yield_cache()
-daily_yield_data = None  # Sẽ được set khi tính daily yield
+# --- LƯU TRỮ TOTAL YIELD HẰNG NGÀY TRÊN THIẾT BỊ (31 NGÀY, TỐI ƯU RAM) ---
+# Mỗi ngày 1 file nhỏ trong thư mục "yield_daily/", chứa tổng sản lượng tích lũy
+# của IM20 và từng inverter để đối chiếu/backfill khi Firebase bị thiếu dữ liệu.
+YIELD_DAILY_DIR = "yield_daily"
+YIELD_KEEP_DAYS = 31
+
+def ensure_yield_dir():
+    try:
+        os.mkdir(YIELD_DAILY_DIR)
+    except OSError:
+        pass
+
+def save_daily_yield_snapshot(local_data):
+    """Ghi snapshot total yield của IM20 + inverter vào file theo ngày (tối ưu RAM)."""
+    try:
+        sys_data = local_data.get("system", {})
+        inv_data = local_data.get("inverters", {})
+        total = sys_data.get("total_yield_wh", 0)
+        if not total or total <= 0:
+            return  # Chưa đọc được yield hợp lệ
+        now = time.localtime()
+        date_str = "{:04d}-{:02d}-{:02d}".format(now[0], now[1], now[2])
+
+        # Dựng snapshot tối giản: chỉ giữ inverter có yield > 0
+        inv_snap = {}
+        for inv_key, inv in inv_data.items():
+            ywh = inv.get("yield_wh", 0)
+            if ywh and ywh > 0:
+                inv_snap[inv_key] = ywh
+        if not inv_snap:
+            return  # Không có inverter nào có yield -> bỏ qua
+
+        ensure_yield_dir()
+        path = "{}/{}.json".format(YIELD_DAILY_DIR, date_str)
+        with open(path, "w") as f:
+            json.dump({"date": date_str, "total": total, "inverters": inv_snap}, f)
+        del inv_snap
+        prune_old_yield_files()
+        gc.collect()
+    except Exception as e:
+        log_info("Lỗi lưu snapshot yield hằng ngày:", e)
+
+def prune_old_yield_files():
+    """Xóa file snapshot cũ hơn 31 ngày (so sánh chuỗi ngày YYYY-MM-DD)."""
+    try:
+        cutoff_tm = time.localtime(time.time() - (YIELD_KEEP_DAYS - 1) * 86400)
+        cutoff_str = "{:04d}-{:02d}-{:02d}".format(cutoff_tm[0], cutoff_tm[1], cutoff_tm[2])
+        for fname in os.listdir(YIELD_DAILY_DIR):
+            if fname.endswith(".json") and fname[:10] < cutoff_str:
+                try:
+                    os.remove("{}/{}".format(YIELD_DAILY_DIR, fname))
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 # --- KIỂM TRA & SỬ DỤNG ETHERNET ĐÃ KHỞI TẠO TỪ BOOT.PY ---
@@ -133,17 +178,17 @@ if lan.isconnected():
     time_synced = sync_time()
     if not time_synced:
         log_info("Cảnh báo: Không thể đồng bộ thời gian, dữ liệu lịch sử sẽ không hoạt động!")
+            # --- KHỞI TẠO WIFI ACCESS POINT (PHÁT WIFI - CHẾ ĐỘ CẤU HÌNH) ---
 else:
     log_info("Cảnh báo: Chưa nhận được IP Ethernet!")
     time_synced = False
+    # --- KHỞI TẠO WIFI ACCESS POINT (PHÁT WIFI - CHẾ ĐỘ CẤU HÌNH) ---
+    ap = network.WLAN(network.AP_IF)
+    ap.active(True)
+    ap.config(essid="IM20 Monitor", password="lienanh123", authmode=3)
+    log_info("Đã phát Wi-Fi AP. Tên: IM20 Monitor | Pass: lienanh123")
+    log_info("IP Web UI qua Wi-Fi:", ap.ifconfig()[0])
 gc.collect()
-
-# --- KHỞI TẠO WIFI ACCESS POINT (PHÁT WIFI) ---
-ap = network.WLAN(network.AP_IF)
-ap.active(True)
-ap.config(essid="IM20 Monitor", password="lienanh123", authmode=3)
-log_info("Đã phát Wi-Fi AP. Tên: IM20 Monitor | Pass: lienanh123")
-log_info("IP Web UI qua Wi-Fi:", ap.ifconfig()[0])
 
 # --- HÀM TRUYỀN FILE STATIC INDEX.HTML (Streaming theo chunk 512 bytes, tiết kiệm RAM) ---
 def send_index_html(conn):
@@ -166,7 +211,7 @@ server_socket.listen(1)
 server_socket.settimeout(0.1) 
 
 def handle_web_server():
-    global IM20_IP, firebase_enabled, firebase_url_custom, FIREBASE_API_KEY, FIREBASE_DEFAULT_URL
+    global IM20_IP, firebase_enabled, firebase_url_custom, FIREBASE_API_KEY, FIREBASE_DEFAULT_URL, yield_snapshot_interval
     try:
         conn, addr = server_socket.accept()
         led.value(1) # Bật LED khi có người dùng truy cập web hoặc AJAX gọi dữ liệu
@@ -180,6 +225,7 @@ def handle_web_server():
             data_out["system"]["im20_ip"] = IM20_IP
             data_out["system"]["firebase_enabled"] = firebase_enabled
             data_out["system"]["firebase_url_custom"] = firebase_url_custom
+            data_out["system"]["yield_snapshot_interval"] = yield_snapshot_interval
             data_out["logs"] = sys_logs
             conn.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
             conn.send(json.dumps(data_out))
@@ -218,6 +264,57 @@ def handle_web_server():
             conn.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
             conn.send(json.dumps(res_msg))
             del res_msg
+        elif 'GET /set_yield_interval' in request:
+            # Đổi chu kỳ lưu snapshot yield (phút): 30/60/120/180/360/720
+            res_msg = {"status": "ok", "message": "Đã lưu chu kỳ lưu yield!"}
+            try:
+                query = request.split(' ')[1]
+                minutes = int(query.split('minutes=')[1].split('&')[0])
+                if minutes in (30, 60, 120, 180, 360, 720):
+                    yield_snapshot_interval = minutes * 60
+                    save_config({"yield_snapshot_interval": yield_snapshot_interval})
+                    log_info("Chu kỳ lưu snapshot yield:", minutes, "phút")
+                else:
+                    res_msg = {"status": "error", "message": "Giá trị không hợp lệ"}
+            except Exception as e:
+                res_msg = {"status": "error", "message": str(e)}
+            conn.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
+            conn.send(json.dumps(res_msg))
+            del res_msg
+        elif 'GET /yield_history' in request:
+            # Trả về danh sách các ngày đã có snapshot (để đối chiếu/backfill)
+            try:
+                ensure_yield_dir()
+                dates = [f[:10] for f in os.listdir(YIELD_DAILY_DIR) if f.endswith(".json")]
+                dates.sort()
+                out = json.dumps({"dates": dates})
+                del dates
+            except Exception:
+                out = '{"dates":[]}'
+            conn.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
+            conn.send(out)
+            del out
+        elif 'GET /yield_day' in request:
+            # Trả về snapshot total yield của 1 ngày cụ thể (?date=YYYY-MM-DD)
+            try:
+                query = request.split(' ')[1]
+                date_str = query.split('date=')[1].split('&')[0].split(' ')[0]
+                if len(date_str) == 10 and date_str[4] == '-' and date_str[7] == '-':
+                    path = "{}/{}.json".format(YIELD_DAILY_DIR, date_str)
+                    with open(path, 'r') as f:
+                        content = f.read()
+                    conn.send('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
+                    conn.send(content)
+                    del content
+                else:
+                    conn.send('HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n')
+                    conn.send('{"error":"invalid date"}')
+            except OSError:
+                conn.send('HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n')
+                conn.send('{"error":"not found"}')
+            except Exception as e:
+                conn.send('HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n')
+                conn.send(json.dumps({"error": str(e)}))
         else:
             send_index_html(conn)
         conn.close()
@@ -299,29 +396,42 @@ def task_modbus_scan():
         pass
     gc.collect()
 
-    # Đẩy dữ liệu hiện tại lên Firebase (10 giây / lần) - chỉ đẩy nếu được bật
+# --- HÀM ĐẨY DỮ LIỆU LIVE LÊN FIREBASE (30 GIÂY / LẦN) ---
+# Tách riêng khỏi task_modbus_scan để giảm tần suất TLS (tiết kiệm RAM DMA
+# khi bật Wi-Fi AP cùng Ethernet).
+def push_live_to_firebase():
+    global local_data
     base_url = firebase_url_custom if firebase_url_custom else FIREBASE_DEFAULT_URL
     api_key = FIREBASE_API_KEY
-    if firebase_enabled and base_url and api_key:
-        try:
-            gc.collect()
-            led.value(1)
-            push_url = base_url.rstrip('/') + "/solarsystem/live.json?key=" + api_key + "&print=silent"
-            local_data["system"]["firebase_status"] = "connected"
-            headers = {'Content-Type': 'application/json'}
-            raw_payload = json.dumps(payload)
-            gc.collect()
-            res = urequests.put(push_url, data=raw_payload, headers=headers)
-            res.close()
-            del res, headers, raw_payload
-            gc.collect()
-            led.value(0)
-        except Exception as e:
-            log_info("Lỗi đẩy dữ liệu Firebase:", e)
+    if not firebase_enabled or not base_url or not api_key:
+        if "system" in local_data:
             local_data["system"]["firebase_status"] = "disconnected"
-            led.value(0)
-    else:
+        return
+    if "system" not in local_data:
+        return
+    try:
+        gc.collect()
+        led.value(1)
+        # Gắn timestamp (epoch giây + chuỗi ngày giờ) để dashboard xác định
+        # thời điểm kết nối Firebase gần nhất và cảnh báo mất kết nối
+        local_data["system"]["last_update"] = int(time.time())
+        now_tm = time.localtime()
+        local_data["system"]["last_update_str"] = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
+            now_tm[0], now_tm[1], now_tm[2], now_tm[3], now_tm[4], now_tm[5])
+        push_url = base_url.rstrip('/') + "/solarsystem/live.json?key=" + api_key + "&print=silent"
+        local_data["system"]["firebase_status"] = "connected"
+        headers = {'Content-Type': 'application/json'}
+        raw_payload = json.dumps(local_data)
+        gc.collect()
+        res = urequests.put(push_url, data=raw_payload, headers=headers)
+        res.close()
+        del res, headers, raw_payload
+        gc.collect()
+        led.value(0)
+    except Exception as e:
+        log_info("Lỗi đẩy dữ liệu Firebase:", e)
         local_data["system"]["firebase_status"] = "disconnected"
+        led.value(0)
 
 # --- HÀM LƯU DỮ LIỆU LỊCH SỬ (15 PHÚT / LẦN) ---
 def push_history_to_firebase():
@@ -354,131 +464,6 @@ def push_history_to_firebase():
         led.value(0)
         gc.collect()
 
-
-# --- HÀM TÍNH SẢN LƯỢNG NGÀY & THÁNG ---
-def calculate_daily_yield(current_data):
-    global yield_cache, daily_yield_data, local_data
-    now = time.localtime()
-    today_str = "{:04d}-{:02d}-{:02d}".format(now[0], now[1], now[2])
-    month_str = "{:04d}-{:02d}".format(now[0], now[1])
-
-    sys_data = current_data.get("system", {})
-    inv_data = current_data.get("inverters", {})
-    curr_total = sys_data.get("total_yield_wh", 0)
-
-    if "start_of_month" not in yield_cache:
-        yield_cache["start_of_month"] = {"month": "", "total_yield_wh": 0}
-
-    prev_month = yield_cache.get("start_of_month", {}).get("month", "")
-    if month_str != prev_month:
-        yield_cache["start_of_month"] = {"month": month_str, "total_yield_wh": curr_total}
-        log_info("Cập nhật start_of_month: {} -> {} kWh".format(month_str, curr_total))
-
-    start_month_total = yield_cache.get("start_of_month", {}).get("total_yield_wh", 0)
-    if curr_total > 0 and start_month_total > 0 and curr_total >= start_month_total:
-        month_wh = curr_total - start_month_total
-        # ID 125 sản lượng tổng đã là kWh (không chia 1000) - đồng bộ với index.html
-        local_data["system"]["month_yield_kwh"] = round(month_wh, 3)
-    else:
-        local_data["system"]["month_yield_kwh"] = 0
-
-    if curr_total == 0:
-        local_data["system"]["today_yield_kwh"] = 0
-        return  # Chưa có dữ liệu yield
-
-    # ═══════════════════════════════════════════════════════════════════
-    # SỬA LỖI "sản lượng ngày hôm trước = 0":
-    # - Cũ: yield_cache["total_yield_wh"] được cập nhật MỖI lần quét (10s).
-    #   Lúc 00:00 ngày mới: prev_total ≈ total cuối ngày hôm trước (~23:59),
-    #   mà total là TÍCH LŨY TRỌN ĐỜI (không đổi qua đêm) nên
-    #   daily = curr_total(00:00) - prev_total(23:59) ≈ 0  → SAI.
-    # - Mới: cache giữ baseline = total tại ĐẦU NGÀY (~00:00), CHỈ cập nhật
-    #   khi đổi ngày. Khi đó daily của hôm trước =
-    #   curr_total(00:00 hôm nay) - baseline(00:00 hôm qua) = ĐÚNG cả ngày hôm trước.
-    # ═══════════════════════════════════════════════════════════════════
-    last_date = yield_cache.get("last_date", "")
-
-    if today_str != last_date and last_date:
-        # ── Lần quét đầu tiên của ngày mới: tính daily cho NGÀY HÔM TRƯỚC ──
-        prev_total = yield_cache.get("total_yield_wh", 0)   # baseline đầu ngày hôm qua
-        if prev_total > 0 and curr_total >= prev_total:
-            daily_wh = curr_total - prev_total
-            # ID 125 sản lượng tổng đã là kWh: KHÔNG chia 1000 (đồng bộ với index.html).
-            # VD thực tế 08-03: diff=177 ≈ tổng inverter 175.8 kWh, nếu /1000 sẽ ra 0.17 (sai 1000 lần).
-            daily_yield_kwh = round(daily_wh, 3)
-            daily_yield_data = {
-                "date": last_date,
-                "total_yield_kwh": daily_yield_kwh,
-                "inverters": {}
-            }
-            prev_invs = yield_cache.get("inverters", {})
-            for inv_key, inv in inv_data.items():
-                curr_ywh = inv.get("yield_wh", 0)
-                prev_ywh = prev_invs.get(inv_key, {}).get("yield_wh", 0)
-                if curr_ywh > 0 and prev_ywh > 0:
-                    daily_inv_wh = curr_ywh - prev_ywh
-                    if daily_inv_wh >= 0:
-                        # Inverter (ID 126-141) yield_wh là Wh -> CẦN chia 1000 để ra kWh
-                        daily_yield_data["inverters"][inv_key] = {
-                            "yield_kwh": round(daily_inv_wh / 1000, 3)
-                        }
-            local_data["system"]["today_yield_kwh"] = daily_yield_kwh
-            log_info("Daily yield tính cho {}: {} kWh".format(last_date, daily_yield_kwh))
-
-        # Cập nhật baseline mới = total tại ĐẦU NGÀY MỚI (chỉ ở mốc đổi ngày)
-        yield_cache["last_date"] = today_str
-        yield_cache["total_yield_wh"] = curr_total
-        if "inverters" not in yield_cache:
-            yield_cache["inverters"] = {}
-        for inv_key, inv in inv_data.items():
-            ywh = inv.get("yield_wh", 0)
-            if ywh > 0:
-                yield_cache["inverters"][inv_key] = {"yield_wh": ywh}
-    else:
-        # ── Cùng ngày: GIỮ NGUYÊN baseline (không cập nhật total mỗi lần quét) ──
-        # để daily ở mốc đổi ngày không bị triệt tiêu.
-        # Chỉ khởi tạo baseline nếu chưa có (lần đầu chạy / cache mới / sau reset).
-        if not last_date:
-            yield_cache["last_date"] = today_str
-            yield_cache["total_yield_wh"] = curr_total
-            if "inverters" not in yield_cache:
-                yield_cache["inverters"] = {}
-            for inv_key, inv in inv_data.items():
-                ywh = inv.get("yield_wh", 0)
-                if ywh > 0:
-                    yield_cache["inverters"][inv_key] = {"yield_wh": ywh}
-
-    save_yield_cache(yield_cache)
-
-
-# --- HÀM ĐẨY DAILY YIELD LÊN FIREBASE ---
-def push_daily_yield_to_firebase():
-    global daily_yield_data
-    base_url = firebase_url_custom if firebase_url_custom else FIREBASE_DEFAULT_URL
-    api_key = FIREBASE_API_KEY
-    if not firebase_enabled or not base_url or not api_key:
-        return
-    if daily_yield_data is None:
-        return
-    try:
-        date = daily_yield_data["date"]
-        url = "{}/solarsystem/daily_yield/{}.json?key={}&print=silent".format(base_url.rstrip('/'), date, api_key)
-        gc.collect()
-        led.value(1)
-        headers = {'Content-Type': 'application/json'}
-        raw_data = json.dumps(daily_yield_data)
-        gc.collect()
-        res = urequests.put(url, data=raw_data, headers=headers)
-        res.close()
-        del res, headers, raw_data
-        gc.collect()
-        log_info("Đã đẩy daily yield lên Firebase: {} -> {} kWh".format(
-            date, daily_yield_data["total_yield_kwh"]))
-        led.value(0)
-        daily_yield_data = None  # Reset sau khi đẩy thành công
-    except Exception as e:
-        log_info("Lỗi đẩy daily yield lên Firebase:", e)
-        led.value(0)
 
 # --- HÀM KIỂM TRA LỆNH RESET TỪ XA TỪ FIREBASE ---
 def check_remote_commands():
@@ -524,8 +509,11 @@ def main():
     last_firebase_push = 0
     firebase_interval = 900 # Chu kỳ 15 phút (900 giây) đẩy Firebase một lần
     last_cmd_check = 0
-    cmd_check_interval = 10 # Chu kỳ 10 giây kiểm tra lệnh reset từ xa
+    cmd_check_interval = 60 # Chu kỳ 60 giây kiểm tra lệnh reset (giảm TLS để tiết kiệm RAM)
     last_time_check = time.time() # Tránh chạy NTP ngay khi khởi động
+    last_live_push = 0
+    live_push_interval = 30 # Chu kỳ 30 giây đẩy live lên Firebase (dashboard đọc 60s/lần)
+    last_yield_snapshot = 0
     
     log_info("Mạch đã sẵn sàng chạy tác vụ nền!")
     while True:
@@ -539,13 +527,15 @@ def main():
                 log_info("Kiểm tra đồng bộ thời gian định kỳ...")
                 sync_time()
                 last_time_check = time.time()
+                gc.collect()
+                #("Định kỳ:")
         else:
             if current_time - last_time_check >= 60:  # 60 giây / lần nếu mất đồng bộ
                 log_info("Thử đồng bộ thời gian lại...")
                 sync_time()
                 last_time_check = time.time()
         
-        # Kiểm tra lệnh reset từ Firebase (10s/lần)
+        # Kiểm tra lệnh reset từ Firebase (60s/lần)
         if firebase_enabled and current_time - last_cmd_check >= cmd_check_interval:
             check_remote_commands()
             last_cmd_check = time.time()
@@ -554,16 +544,21 @@ def main():
         if current_time - last_modbus_scan >= scan_interval:
             task_modbus_scan()
             last_modbus_scan = time.time()
-            calculate_daily_yield(local_data)
         
-        # Đẩy daily yield lên Firebase nếu có
-        if daily_yield_data is not None:
-            push_daily_yield_to_firebase()
+        # Đẩy dữ liệu live lên Firebase (30 giây/lần)
+        if current_time - last_live_push >= live_push_interval:
+            push_live_to_firebase()
+            last_live_push = time.time()
         
         # Chỉ gửi Firebase khi đã đồng bộ thời gian
         if time_synced and current_time - last_firebase_push >= firebase_interval:
             push_history_to_firebase()
             last_firebase_push = time.time()
+        
+        # Lưu snapshot total yield hằng ngày vào flash (theo chu kỳ cấu hình) để backfill khi Firebase thiếu
+        if time_synced and current_time - last_yield_snapshot >= yield_snapshot_interval:
+            save_daily_yield_snapshot(local_data)
+            last_yield_snapshot = time.time()
         
         # Dọn rác định kỳ mỗi 30 giây để tránh phân mảnh heap
         if current_time % 30 < 0.1:
@@ -573,4 +568,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
