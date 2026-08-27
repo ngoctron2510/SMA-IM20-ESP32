@@ -178,7 +178,6 @@ if lan.isconnected():
     time_synced = sync_time()
     if not time_synced:
         log_info("Cảnh báo: Không thể đồng bộ thời gian, dữ liệu lịch sử sẽ không hoạt động!")
-            # --- KHỞI TẠO WIFI ACCESS POINT (PHÁT WIFI - CHẾ ĐỘ CẤU HÌNH) ---
 else:
     log_info("Cảnh báo: Chưa nhận được IP Ethernet!")
     time_synced = False
@@ -383,7 +382,13 @@ def task_modbus_scan():
             time.sleep(0.02)
         
         client.close()
-    
+    # Giữ lại trạng thái Firebase (firebase_status, last_update, last_update_str)
+    # giữa các lần quét Modbus (10s) vì đẩy live Firebase chạy 30s/lần — tránh
+    # web UI báo "mất kết nối" trong khoảng 30 giây chờ lần đẩy kế tiếp.
+    prev_sys = local_data.get("system", {})
+    for k in ("firebase_status", "last_update", "last_update_str"):
+        if k in prev_sys:
+            payload["system"][k] = prev_sys[k]
     # Cập nhật local_data
     local_data = payload
     try:
