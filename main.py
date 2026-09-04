@@ -8,7 +8,7 @@ import ustruct
 import machine
 import ntptime
 import gc
-from machine import Pin
+from machine import Pin, WDT
 from uModbusTCP import ModbusTCP
 
 # Cấu hình GC: dọn rác thường xuyên hơn để tránh phân mảnh heap
@@ -41,12 +41,160 @@ def log_mem_health(tag):
     except Exception:
         pass
 '''
+# ============================================================================
+# CƠ CHẾ TỰ ĐỘNG REBOOT KHI TREO / LỖI (WATCHDOG + CHỐNG VÒNG LẶP RESET)
+# ----------------------------------------------------------------------------
+# 1) Hardware Watchdog (WDT): nếu chương trình bị treo (không nuôi WDT) quá
+#    WDT_TIMEOUT_MS thì ESP32 tự khởi động lại — không cần can thiệp thủ công.
+# 2) Ghi nhận nguyên nhân reset (treo WDT / lỗi nghiêm trọng) và đếm số lần
+#    reboot liên tiếp. Nếu ≥ CRASH_LOOP_LIMIT lần liên tiếp (chưa chạy ổn định
+#    đủ 5 phút) → coi là "vòng lặp lỗi" (vd: OTA cài bản main.py lỗi) → tự khôi
+#    phục từ main.py.bak nếu có rồi khởi động lại.
+# ============================================================================
+WDT_TIMEOUT_MS = 30000      # Reset phần cứng nếu chương trình treo > 30 giây
+STABLE_UPTIME_S = 300       # Chạy ổn định ≥ 5 phút → xem như đã hết lỗi
+CRASH_LOOP_LIMIT = 3        # ≥ 3 lần reboot liên tiếp do lỗi → vòng lặp lỗi
+REBOOT_STATE_FILE = "reboot_state.json"   # Lưu số lần reboot liên tiếp (flash)
+CRASH_MARKER_FILE = "crash.marker"        # Đánh dấu trước khi reset do lỗi
+
+# Hardware watchdog: tạo NGAY từ đầu (trên ESP32 không thể tắt sau khi tạo).
+# Nếu firmware không hỗ trợ thì wdt = None và _feed() chỉ là no-op.
+try:
+    wdt = WDT(timeout=WDT_TIMEOUT_MS)
+    _wdt_ok = True
+except Exception as e:
+    wdt = None
+    _wdt_ok = False
+    print("[Watchdog] CẢNH BÁO: Không tạo được hardware WDT:", e)
+
+def _feed():
+    """Nuôi watchdog — gọi ở nơi chương trình vẫn đang chạy 'sống' bình thường."""
+    if _wdt_ok:
+        try:
+            wdt.feed()
+        except Exception:
+            pass
+
+def _read_reboot_state():
+    try:
+        with open(REBOOT_STATE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _write_reboot_state(st):
+    try:
+        with open(REBOOT_STATE_FILE, "w") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
+
+def _reset_boot_count():
+    """Xoá bộ đếm lỗi sau khi thiết bị chạy ổn định (tránh báo nhầm 'vòng lặp lỗi')."""
+    try:
+        with open(REBOOT_STATE_FILE, "w") as f:
+            json.dump({"count": 0, "recovered": 0}, f)
+    except Exception:
+        pass
+
+def _safe_halt():
+    """Dừng AN TOÀN: nháy LED báo lỗi, không chạy ứng dụng để kỹ thuật viên
+    can thiệp qua WebREPL/Thonny (tránh reboot liên tục vô ích)."""
+    log_info("DỪNG AN TOÀN: thiết bị đang ở trạng thái lỗi, chờ xử lý qua WebREPL/Thonny!")
+    while True:
+        try:
+            for _ in range(3):
+                led.value(1)
+                time.sleep(0.12)
+                led.value(0)
+                time.sleep(0.12)
+        except Exception:
+            pass
+        time.sleep(3)
+        _feed()  # Vẫn nuôi WDT để không tự reset liên tục khi đang chờ
+
+def _fatal_reset(msg):
+    """Reset do lỗi nghiêm trọng: ghi marker để lần boot sau biết là lỗi liên tiếp."""
+    log_info("LỖI NGHIÊM TRỌNG:", msg)
+    try:
+        with open(CRASH_MARKER_FILE, "w") as f:
+            f.write("1")
+    except Exception:
+        pass
+    gc.collect()
+    time.sleep(1)
+    machine.reset()
+
+def watchdog_startup_check():
+    """Chạy ngay sau khi khởi động: phân tích nguyên nhân reset của lần trước.
+    - Reset do WDT (treo) hoặc do lỗi nghiêm trọng (có marker) → tăng bộ đếm.
+    - Reset tay / mất điện / lệnh reboot chủ động → bỏ đếm (không phải lỗi).
+    Nếu số lần liên tiếp ≥ CRASH_LOOP_LIMIT → tự khôi phục main.py.bak."""
+    cause = machine.reset_cause()
+    st = _read_reboot_state()
+    n = st.get("count", 0)
+
+    if cause == machine.WDT_RESET:
+        # Lần reset trước do Watchdog: chương trình đã bị TREO thật sự
+        n += 1
+        reason = "WATCHDOG (treo)"
+    else:
+        # Kiểm tra marker của lỗi nghiêm trọng (ghi trước khi gọi _fatal_reset)
+        try:
+            os.remove(CRASH_MARKER_FILE)
+            n += 1
+            reason = "LỖI NGHIÊM TRỌNG"
+        except OSError:
+            # Không có marker → reset tay / mất điện / reboot chủ động: KHÔNG tính lỗi
+            n = 0
+            reason = "bình thường"
+            st["recovered"] = 0  # Cho phép thử khôi phục lại ở chu kỳ lỗi sau
+
+    st["count"] = n
+    if n >= 2:
+        log_info("Phát hiện reboot liên tiếp ({} lần) do {} — thiết bị có thể đang gặp lỗi!".format(n, reason))
+    _write_reboot_state(st)
+
+    if n >= CRASH_LOOP_LIMIT:
+        log_info("PHÁT HIỆN VÒNG LẶP LỖI ({} lần liên tiếp)! Đang xử lý khôi phục...".format(n))
+        if st.get("recovered", 0) == 0:
+            # Lần đầu dính vòng lặp: thử khôi phục bản main.py.bak (bản chạy ổn định cũ)
+            try:
+                os.stat("main.py.bak")
+                has_bak = True
+            except OSError:
+                has_bak = False
+            if has_bak:
+                log_info("Khôi phục main.py.bak (bản trước khi bị lỗi)...")
+                try:
+                    os.remove("main.py")
+                except OSError:
+                    pass
+                os.rename("main.py.bak", "main.py")
+                st["recovered"] = 1
+                st["count"] = 0
+                _write_reboot_state(st)
+                log_info("Đã khôi phục! Khởi động lại với bản main.py cũ...")
+                time.sleep(1)
+                machine.reset()
+            else:
+                # Không có backup → có thể chỉ là lỗi tạm thời (mạng chập chờn...)
+                log_info("Không có main.py.bak — xem là lỗi tạm thời, tiếp tục khởi động lại để tự phục hồi.")
+                st["count"] = 0
+                _write_reboot_state(st)
+        else:
+            # Đã khôi phục 1 lần trước đó nhưng vẫn lỗi → dừng an toàn chờ kỹ thuật viên
+            _safe_halt()
+
 # --- NGOẠI VI PHẦN CỨNG ---
 # --- CẤU HÌNH LED TRẠNG THÁI (CHỈNH TRƯỚC KHI NẠP THIẾT BỊ) ---
 # Chọn đúng chân LED theo bo mạch, đổi dòng dưới đây rồi mới nạp, không cần sửa main.py:
 LED_PIN = 12        # Bo xanh tích hợp
 led = Pin(LED_PIN, Pin.OUT)
 led.value(0)        # Ban đầu tắt LED
+
+# Kiểm tra nguyên nhân reset lần trước & tự phục hồi nếu phát hiện vòng lặp lỗi
+watchdog_startup_check()
 
 # Biến điều khiển đẩy Firebase (khai báo trước để load_config dùng global)
 firebase_enabled = False  # Mặc định TẮT đẩy Firebase
@@ -84,14 +232,14 @@ IM20_IP = config.get("im20_ip", "172.16.32.119") #IP của IM20 thực tế
 #Cập nhật API_KEY cho dự án firebase, sai api_key sẽ không ghi dữ liệu được
 #FIREBASE_API_KEY = "AIzaSyCGA2ktgEbP0vpFq1zbZ7zekGzPKrumikM" # Server test
 FIREBASE_API_KEY = "AIzaSyAwtFVfjPctaUtFR591VENo_BB7P4L5bDQ" # Server vận hành web
-# Firmware version
-log_info("Firmware Version: V1.0.2 ngày 27/8/2026")
+#log_info("Firebase API key là " + FIREBASE_API_KEY)
 
 # --- HÀM ĐỒNG BỘ THỜI GIAN (chỉ dùng 1 server time.google.com, nhẹ) ---
 def sync_time():
     """Đồng bộ thời gian qua NTP. Trả về True nếu thành công."""
     global time_synced
     for retry in range(5):
+        _feed()  # Nuôi WDT giữa các lần thử NTP
         try:
             ntptime.host = "time.google.com"
             ntptime.settime()
@@ -179,6 +327,7 @@ if lan.isconnected():
     time_synced = sync_time()
     if not time_synced:
         log_info("Cảnh báo: Không thể đồng bộ thời gian, dữ liệu lịch sử sẽ không hoạt động!")
+            # --- KHỞI TẠO WIFI ACCESS POINT (PHÁT WIFI - CHẾ ĐỘ CẤU HÌNH) ---
 else:
     log_info("Cảnh báo: Chưa nhận được IP Ethernet!")
     time_synced = False
@@ -200,6 +349,7 @@ def send_index_html(conn):
                 if not buf:
                     break
                 conn.send(buf)
+                _feed()  # Nuôi WDT khi gửi file dài (gửi chậm nhưng vẫn tiến triển thì không reset)
     except Exception as e:
         print("Lỗi gửi index.html:", e)
 
@@ -214,6 +364,9 @@ def handle_web_server():
     global IM20_IP, firebase_enabled, firebase_url_custom, FIREBASE_API_KEY, FIREBASE_DEFAULT_URL, yield_snapshot_interval
     try:
         conn, addr = server_socket.accept()
+        # Chống treo: nếu client mở kết nối nhưng không gửi dữ liệu, recv() sẽ
+        # timeout sau 5s thay vì block vô hạn làm treo cả vòng lặp chính.
+        conn.settimeout(5.0)
         led.value(1) # Bật LED khi có người dùng truy cập web hoặc AJAX gọi dữ liệu
         request = conn.recv(384).decode('utf-8') # Giảm buffer từ 1024 xuống 384 để tiết kiệm heap
         
@@ -320,8 +473,14 @@ def handle_web_server():
         conn.close()
         gc.collect() # Giải phóng heap sau mỗi request web
         led.value(0) # Tắt LED sau khi xử lý xong request
+        _feed()
     except OSError:
-        pass
+        # Timeout/ngắt kết nối (do conn.settimeout) — đóng kết nối rồi tiếp tục vòng lặp
+        try:
+            conn.close()
+        except Exception:
+            pass
+        led.value(0)
 
 # --- HÀM QUÉT MODBUS (cập nhật local_data cho Web) ---
 def task_modbus_scan():
@@ -347,6 +506,7 @@ def task_modbus_scan():
         # 2. Đọc 16 Inverter thành phần (Unit ID: 126 đến 141)
         payload["inverters"] = {}
         for inv_id in range(126, 142):
+            _feed()  # Nuôi WDT mỗi inverter — quét chậm nhưng vẫn 'sống' sẽ không bị reset nhầm
             data_inv = client.read_holding_registers(inv_id, 40187, 13)
             if data_inv and len(data_inv) >= 13:
                 if data_inv[0] == 0xFFFF or data_inv[12] == 0x8000:
@@ -373,6 +533,7 @@ def task_modbus_scan():
                 payload["system"]["total_yield_wh"] = raw  # WH_SF=3
 
         for inv_id in range(126, 142):
+            _feed()
             if f"inv_{inv_id}" not in payload["inverters"]:
                 continue
             data_yield_inv = client.read_holding_registers(inv_id, 40209, 2)
@@ -383,6 +544,7 @@ def task_modbus_scan():
             time.sleep(0.02)
         
         client.close()
+    
     # Giữ lại trạng thái Firebase (firebase_status, last_update, last_update_str)
     # giữa các lần quét Modbus (10s) vì đẩy live Firebase chạy 30s/lần — tránh
     # web UI báo "mất kết nối" trong khoảng 30 giây chờ lần đẩy kế tiếp.
@@ -390,6 +552,7 @@ def task_modbus_scan():
     for k in ("firebase_status", "last_update", "last_update_str"):
         if k in prev_sys:
             payload["system"][k] = prev_sys[k]
+
     # Cập nhật local_data
     local_data = payload
     try:
@@ -420,7 +583,9 @@ def push_live_to_firebase():
         led.value(1)
         # Gắn timestamp (epoch giây + chuỗi ngày giờ) để dashboard xác định
         # thời điểm kết nối Firebase gần nhất và cảnh báo mất kết nối
-        local_data["system"]["last_update"] = int(time.time())
+        # MicroPython ESP32: time.time() dùng epoch 2000-01-01 (không phải 1970-01-01),
+        # nên cộng offset 946684800 để ghi đúng Unix epoch cho dashboard tính "cách đây".
+        local_data["system"]["last_update"] = int(time.time()) + 946684800
         now_tm = time.localtime()
         local_data["system"]["last_update_str"] = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
             now_tm[0], now_tm[1], now_tm[2], now_tm[3], now_tm[4], now_tm[5])
@@ -433,6 +598,7 @@ def push_live_to_firebase():
         res.close()
         del res, headers, raw_payload
         gc.collect()
+        _feed()
         led.value(0)
     except Exception as e:
         log_info("Lỗi đẩy dữ liệu Firebase:", e)
@@ -463,6 +629,7 @@ def push_history_to_firebase():
         res.close()
         del res, headers, raw_data
         gc.collect()
+        _feed()
         log_info("Đã lưu dữ liệu lịch sử vào Firebase: {}/{}.".format(date_str, time_str))
         led.value(0)
     except Exception as e:
@@ -486,6 +653,7 @@ def check_remote_commands():
         res.close()
         del res, headers
         gc.collect()
+        _feed()
 
         if val is True or val == "reboot" or (isinstance(val, dict) and val.get("action") == "reboot"):
             log_info("⚠️ NHẬN LỆNH RESET TỪ XA TỪ FIREBASE! ĐANG KHỞI ĐỘNG LẠI ESP32...")
@@ -522,8 +690,20 @@ def main():
     last_yield_snapshot = 0
     
     log_info("Mạch đã sẵn sàng chạy tác vụ nền!")
+    stable_cleared = False
     while True:
-        handle_web_server()
+        _feed()  # Nuôi watchdog mỗi vòng lặp — nếu treo quá WDT_TIMEOUT_MS thì ESP32 tự reset
+        try:
+            handle_web_server()
+        except Exception as e:
+            log_info("Lỗi xử lý web:", e)
+            gc.collect()
+        _feed()
+
+        # Chạy ổn định đủ lâu (không bị reset) → xoá bộ đếm lỗi để không báo nhầm vòng lặp lỗi
+        if not stable_cleared and time.ticks_ms() >= STABLE_UPTIME_S * 1000:
+            _reset_boot_count()
+            stable_cleared = True
         
         current_time = time.time()
         
@@ -573,4 +753,10 @@ def main():
         time.sleep(0.02)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        log_info("LỖI NGHIÊM TRỌNG ngoài main():", e)
+        gc.collect()
+        _fatal_reset("Lỗi ngoài main(): " + str(e))
+
