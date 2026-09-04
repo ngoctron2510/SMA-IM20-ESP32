@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>WT32-ETH01 Giám sát SMA</title>
+    <title>WT32-ETH01 Giám sát SMA-v1.2 updated on 04/09/2026</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f9; }
         .container { max-width: 900px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
@@ -12,7 +12,7 @@
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: center; }
         th { background-color: #007bff; color: white; }
-        input[type=text], input[type=password] { padding: 8px; width: 220px; border: 1px solid #ccc; border-radius: 4px; }
+        input[type=text] { padding: 8px; width: 200px; border: 1px solid #ccc; border-radius: 4px; }
         button { padding: 8px 15px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
     </style>
     <script>
@@ -24,7 +24,7 @@
                 el.innerHTML = '<span style="color:red;font-weight:bold">&#9679; Mất kết nối</span>';
             }
         }
-        function updateFirebaseUI(enabled, customUrl, apiKey) {
+        function updateFirebaseUI(enabled, customUrl) {
             let btn = document.getElementById('fb_toggle_btn');
             let statusText = document.getElementById('fb_toggle_status');
             if(enabled) {
@@ -39,10 +39,6 @@
             let fbInput = document.getElementById('fb_url_input');
             if(fbInput && customUrl !== undefined && document.activeElement !== fbInput) {
                 fbInput.value = customUrl;
-            }
-            let keyInput = document.getElementById('fb_key_input');
-            if(keyInput && apiKey !== undefined && document.activeElement !== keyInput) {
-                keyInput.value = apiKey;
             }
         }
         function toggleFirebase() {
@@ -80,16 +76,15 @@
         }
         function saveFirebaseUrl() {
             let url = document.getElementById('fb_url_input').value.trim();
-            let key = document.getElementById('fb_key_input').value.trim();
             let notice = document.getElementById('fb_notice');
             notice.style.color = '#007bff';
             notice.innerText = 'Đang lưu...';
-            fetch('/set_firebase_url?url=' + encodeURIComponent(url) + '&key=' + encodeURIComponent(key))
+            fetch('/set_firebase_url?url=' + encodeURIComponent(url))
                 .then(r => r.json())
                 .then(data => {
                     if(data.status === 'ok') {
                         notice.style.color = 'green';
-                        notice.innerText = '✔ ' + (data.message || 'Đã lưu Firebase Config thành công!');
+                        notice.innerText = '✔ ' + (data.message || 'Đã lưu URL thành công!');
                     } else {
                         notice.style.color = 'red';
                         notice.innerText = '✖ Lỗi: ' + data.message;
@@ -98,7 +93,31 @@
                 })
                 .catch(err => {
                     notice.style.color = 'red';
-                    notice.innerText = '✖ Lỗi kết nối khi lưu Cấu hình!';
+                    notice.innerText = '✖ Lỗi kết nối khi lưu URL!';
+                    setTimeout(() => { notice.innerText = ''; }, 4000);
+                });
+        }
+        function saveYieldInterval() {
+            let sel = document.getElementById('yield_interval_select');
+            let minutes = sel.value;
+            let notice = document.getElementById('yield_notice');
+            notice.style.color = '#007bff';
+            notice.innerText = 'Đang lưu...';
+            fetch('/set_yield_interval?minutes=' + minutes)
+                .then(r => r.json())
+                .then(data => {
+                    if(data.status === 'ok') {
+                        notice.style.color = 'green';
+                        notice.innerText = '✔ ' + (data.message || 'Đã lưu!');
+                    } else {
+                        notice.style.color = 'red';
+                        notice.innerText = '✖ Lỗi: ' + data.message;
+                    }
+                    setTimeout(() => { notice.innerText = ''; }, 4000);
+                })
+                .catch(err => {
+                    notice.style.color = 'red';
+                    notice.innerText = '✖ Lỗi kết nối!';
                     setTimeout(() => { notice.innerText = ''; }, 4000);
                 });
         }
@@ -119,16 +138,37 @@
                     if(data.system.device_ip) {
                         document.getElementById('device_ip').innerText = data.system.device_ip;
                     }
-                    if(data.system.today_yield_kwh !== undefined) {
-                        document.getElementById('today_yield').innerText = data.system.today_yield_kwh.toFixed(1);
-                    }
-                    if(data.system.month_yield_kwh !== undefined) {
-                        document.getElementById('month_yield').innerText = data.system.month_yield_kwh.toFixed(1);
-                    }
                     updateStatus('im20_status', data.system.im20_status || 'disconnected');
                     updateStatus('fb_status', data.system.firebase_status || 'disconnected');
+                    // Hiển thị thời điểm kết nối/đẩy Firebase gần nhất (heartbeat)
+                    let fbLastUpdateEl = document.getElementById('fb_last_update');
+                    if(fbLastUpdateEl) {
+                        // MicroPython ESP32: time.time() dùng epoch 2000-01-01 -> cộng 946684800 về Unix epoch (1970)
+                        const _rawLu = data.system.last_update;
+                        const _normLu = (_rawLu && Number(_rawLu) > 0 && Number(_rawLu) < 946684800)
+                            ? Number(_rawLu) + 946684800 : Number(_rawLu);
+                        const lastStr = data.system.last_update_str
+                            || (_normLu ? new Date(_normLu * 1000).toLocaleString('vi-VN') : null);
+                        if(lastStr) {
+                            fbLastUpdateEl.textContent = lastStr;
+                            fbLastUpdateEl.style.color = (data.system.firebase_status === 'connected') ? '#00b894' : '#e17055';
+                        } else {
+                            fbLastUpdateEl.textContent = 'Chưa có dữ liệu';
+                            fbLastUpdateEl.style.color = '#636e72';
+                        }
+                    }
                     if(data.system.firebase_enabled !== undefined) {
-                        updateFirebaseUI(data.system.firebase_enabled, data.system.firebase_url_custom || '', data.system.firebase_api_key || '');
+                        updateFirebaseUI(data.system.firebase_enabled, data.system.firebase_url_custom || '');
+                    }
+                    if(data.system.yield_snapshot_interval !== undefined) {
+                        let sel = document.getElementById('yield_interval_select');
+                        if(sel && document.activeElement !== sel) {
+                            let minutes = Math.round(data.system.yield_snapshot_interval / 60);
+                            let allowed = ['30','60','120','180','360','720'];
+                            if(allowed.indexOf(String(minutes)) !== -1) {
+                                sel.value = String(minutes);
+                            }
+                        }
                     }
                 }
                 
@@ -184,15 +224,24 @@
                 <span id="ip_notice" style="margin-left:10px;font-weight:bold"></span>
             </div>
             <hr style="margin:12px 0;border-color:#ddd">
-            <div style="margin-bottom:8px;">
-                <label>Firebase Database URL: </label>
-                <input type="text" id="fb_url_input" value="" placeholder="https://...firebasedatabase.app" style="width:260px">
-            </div>
             <div>
-                <label>Firebase API Key: </label>
-                <input type="password" id="fb_key_input" value="" placeholder="AIzaSy..." style="width:260px">
-                <button onclick="saveFirebaseUrl()">Lưu Firebase Config</button>
+                <label>Firebase Database URL (để trống dùng mặc định): </label>
+                <input type="text" id="fb_url_input" value="" placeholder="https://...firebasedatabase.app" style="width:300px">
+                <button onclick="saveFirebaseUrl()">Lưu URL</button>
                 <span id="fb_notice" style="margin-left:10px;font-weight:bold"></span>
+            </div>
+            <hr style="margin:12px 0;border-color:#ddd">
+            <div>
+                <label>Chu kỳ lưu snapshot yield (thiết bị): </label>
+                <select id="yield_interval_select" onchange="saveYieldInterval()">
+                    <option value="30">30 phút</option>
+                    <option value="60" selected>1 giờ</option>
+                    <option value="120">2 giờ</option>
+                    <option value="180">3 giờ</option>
+                    <option value="360">6 giờ</option>
+                    <option value="720">12 giờ</option>
+                </select>
+                <span id="yield_notice" style="margin-left:10px;font-weight:bold"></span>
             </div>
         </div>
 
@@ -201,6 +250,7 @@
             <p>IP thiết bị (WT32-ETH01): <span id="device_ip" style="font-weight:bold;color:#007bff">-</span></p>
             <p>IM20 (Inverter Manager): <span id="im20_status"><span style="color:gray">&#9679; Đang chờ...</span></span></p>
             <p>Firebase: <span id="fb_status"><span style="color:gray">&#9679; Đang chờ...</span></span></p>
+            <p>🕐 Kết nối Firebase gần nhất: <span id="fb_last_update" style="font-weight:bold">--</span></p>
             <p>Đẩy dữ liệu Firebase: <span id="fb_toggle_status"><span style="color:gray">&#9679; Đang tắt</span></span>
                <button id="fb_toggle_btn" onclick="toggleFirebase()" style="margin-left:10px;padding:6px 14px;background:#28a745;color:white;border:none;border-radius:4px;cursor:pointer">Đang tải...</button>
             </p>
@@ -209,8 +259,6 @@
             <h2>Thông số tổng Hệ thống (IM20)</h2>
             <p>Công suất tổng hệ thống: <span id="sys_p">-</span></p>
             <p>Tần số mạng lưới: <span id="sys_f">-</span></p>
-            <p>⚡ Sản lượng hôm nay: <span id="today_yield" style="color:#e17055;font-weight:bold">--</span> kWh</p>
-            <p>📊 Sản lượng tháng này: <span id="month_yield" style="color:#00b894;font-weight:bold">--</span> kWh</p>
         </div>
 
         <div class="card">
